@@ -1,0 +1,97 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ENUMS
+enum SubStatus {
+  ACTIVE
+  EXPIRED
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum InstitutionType {
+  INSURANCE
+  LAWYER
+}
+
+enum VehicleType {
+  CAR
+  MOTORCYCLE
+}
+
+// 1. DRIVERS TABLE
+model Driver {
+  id             Int           @id @default(autoincrement())
+  vehiclePlate   String        @unique @map("vehicle_plate")
+  vehicleMakeModel String      @map("vehicle_make_model")
+  vehicleType    VehicleType   @default(CAR) @map("vehicle_type")
+  mykadLastFour  String        @map("mykad_last_four")
+  phone          String?       @map("phone")
+  subStatus      SubStatus     @default(ACTIVE) @map("sub_status")
+  subExpiresAt   DateTime      @map("sub_expires_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  accidentLogs   AccidentLog[]
+
+  @@map("drivers")
+}
+
+// 2. ACCIDENT LOGS TABLE
+model AccidentLog {
+  id                   Int                   @id @default(autoincrement())
+  logHash              String                @unique @map("log_hash")
+  vehiclePlate         String                @map("vehicle_plate")
+  driver               Driver                @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  latitude             Decimal               @db.Decimal(10, 8)
+  longitude            Decimal               @db.Decimal(11, 8)
+  videoUrl             String                @map("video_url")
+  isReportPaid         Boolean               @default(false) @map("is_report_paid")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  verificationRequests VerificationRequest[]
+
+  @@map("accident_logs")
+}
+
+// 3. VERIFICATION REQUESTS TABLE
+model VerificationRequest {
+  id                  Int              @id @default(autoincrement())
+  logHash             String           @map("log_hash")
+  accidentLog         AccidentLog      @relation(fields: [logHash], references: [logHash])
+  institutionalUserId Int?             @map("institutional_user_id")
+  institutionalUser   InstitutionalUser? @relation(fields: [institutionalUserId], references: [id])
+  requesterType       InstitutionType  @map("requester_type")
+  companyName         String           @map("company_name")
+  caseReferenceNo     String           @map("case_reference_no")
+  approvalStatus      RequestStatus    @default(PENDING) @map("approval_status")
+  driverApprovedAt    DateTime?        @map("driver_approved_at")
+  consentToken        String?          @unique @map("consent_token")
+  isPaymentSettled    Boolean          @default(false) @map("is_payment_settled")
+  createdAt           DateTime         @default(now()) @map("created_at")
+
+  @@index([logHash])
+  @@map("verification_requests")
+}
+
+// 4. INSTITUTIONAL USERS TABLE
+model InstitutionalUser {
+  id                   Int                   @id @default(autoincrement())
+  email                String                @unique
+  passwordHash         String                @map("password_hash")
+  companyName          String                @map("company_name")
+  requesterType        InstitutionType       @map("requester_type")
+  licenseId            String                @map("license_id")
+  isApproved           Boolean               @default(false) @map("is_approved")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  verificationRequests VerificationRequest[]
+
+  @@map("institutional_users")
+}
