@@ -5,7 +5,7 @@ const prisma = new PrismaClient();
 exports.requestAccess = async (req, res) => {
     try {
         const { logHash, caseReferenceNo } = req.body;
-        const { id: institutionalUserId, requesterType } = req.institution; // from JWT
+        const { id: institutionalUserId, requesterType } = req.institution;
 
         if (!logHash || !caseReferenceNo) {
             return res.status(400).json({ error: "Missing required parameters." });
@@ -34,8 +34,7 @@ exports.requestAccess = async (req, res) => {
             }
         });
 
-        // TODO Phase 2: Send WhatsApp to driver via UltraMsg with consent link
-        // GET driver phone from accidentLog → driver.phone
+        // TODO Phase 2: Send WhatsApp to driver via Twilio with consent link
         console.log(`[AWAS CONSENT] Ticket ${verificationTicket.id} | Token: ${consentToken}`);
 
         res.status(202).json({
@@ -95,7 +94,7 @@ exports.driverAuthorize = async (req, res) => {
 exports.unlockEvidence = async (req, res) => {
     try {
         const { ticketId } = req.body;
-        const { id: institutionalUserId } = req.institution; // from JWT
+        const { id: institutionalUserId } = req.institution;
 
         if (!ticketId) return res.status(400).json({ error: "Missing ticket ID." });
 
@@ -118,7 +117,7 @@ exports.unlockEvidence = async (req, res) => {
             return res.status(403).json({ error: `Access Denied: Status is ${ticket.approvalStatus}.` });
         }
 
-        // TODO Phase 2: Verify Billplz payment before settling
+        // TODO Phase 2: Verify payment before settling
 
         const settledTicket = await prisma.verificationRequest.update({
             where: { id: parseInt(ticketId) },
@@ -126,24 +125,51 @@ exports.unlockEvidence = async (req, res) => {
         });
 
         const accessRate = ticket.requesterType === 'INSURANCE' ? 'RM 50.00' : 'RM 100.00';
+        const log = ticket.accidentLog;
+        const driver = log.driver;
 
         res.status(200).json({
             meta: {
+                writNumber: log.writNumber,
                 billingRate: accessRate,
                 transactionSettled: settledTicket.isPaymentSettled,
                 consentSignedAt: ticket.driverApprovedAt
             },
             evidenceBundle: {
-                signatureHash: ticket.accidentLog.logHash,
+                // Cryptographic seal
+                signatureHash: log.logHash,
+                otherVehicleHash: log.otherVehicleHash,
+
+                // Location
                 geotag: {
-                    latitude: ticket.accidentLog.latitude,
-                    longitude: ticket.accidentLog.longitude
+                    latitude: log.latitude,
+                    longitude: log.longitude
                 },
-                forensicAssetUrl: ticket.accidentLog.videoUrl,
-                driverMetadata: {
-                    vehiclePlate: ticket.accidentLog.driver.vehiclePlate,
-                    vehicleModel: ticket.accidentLog.driver.vehicleMakeModel,
-                    mykadLastFour: ticket.accidentLog.driver.mykadLastFour
+
+                // Media
+                forensicAssetUrl: log.videoUrl,
+                otherVehicleAssetUrl: log.otherVehicleVideoUrl,
+
+                // Incident details
+                incidentDetails: {
+                    description: log.incidentDescription,
+                    roadCondition: log.roadCondition,
+                    weatherCondition: log.weatherCondition,
+                    injuryStatus: log.injuryStatus
+                },
+
+                // Own vehicle
+                ownVehicle: {
+                    vehiclePlate: driver.vehiclePlate,
+                    vehicleModel: driver.vehicleMakeModel,
+                    vehicleType: driver.vehicleType,
+                    mykadLastFour: driver.mykadLastFour
+                },
+
+                // Other party
+                otherVehicle: {
+                    plate: log.otherVehiclePlate,
+                    makeModel: log.otherVehicleMakeModel
                 }
             }
         });

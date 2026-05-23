@@ -29,18 +29,41 @@ enum VehicleType {
   MOTORCYCLE
 }
 
+enum RoadCondition {
+  DRY
+  WET
+  FLOODED
+  UNDER_CONSTRUCTION
+  UNKNOWN
+}
+
+enum WeatherCondition {
+  CLEAR
+  RAINY
+  FOGGY
+  HAZY
+  NIGHT
+  UNKNOWN
+}
+
+enum InjuryStatus {
+  NONE
+  MINOR
+  SERIOUS
+}
+
 // 1. DRIVERS TABLE
 model Driver {
-  id             Int           @id @default(autoincrement())
-  vehiclePlate   String        @unique @map("vehicle_plate")
-  vehicleMakeModel String      @map("vehicle_make_model")
-  vehicleType    VehicleType   @default(CAR) @map("vehicle_type")
-  mykadLastFour  String        @map("mykad_last_four")
-  phone          String?       @map("phone")
-  subStatus      SubStatus     @default(ACTIVE) @map("sub_status")
-  subExpiresAt   DateTime      @map("sub_expires_at")
-  createdAt      DateTime      @default(now()) @map("created_at")
-  accidentLogs   AccidentLog[]
+  id               Int           @id @default(autoincrement())
+  vehiclePlate     String        @unique @map("vehicle_plate")
+  vehicleMakeModel String        @map("vehicle_make_model")
+  vehicleType      VehicleType   @default(CAR) @map("vehicle_type")
+  mykadLastFour    String        @map("mykad_last_four")
+  phone            String?       @map("phone")
+  subStatus        SubStatus     @default(ACTIVE) @map("sub_status")
+  subExpiresAt     DateTime      @map("sub_expires_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  accidentLogs     AccidentLog[]
 
   @@map("drivers")
 }
@@ -48,13 +71,36 @@ model Driver {
 // 2. ACCIDENT LOGS TABLE
 model AccidentLog {
   id                   Int                   @id @default(autoincrement())
+
+  // WRIT REFERENCE
+  writNumber           String?               @unique @map("writ_number")
+
+  // OWN VEHICLE EVIDENCE
   logHash              String                @unique @map("log_hash")
   vehiclePlate         String                @map("vehicle_plate")
   driver               Driver                @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  videoUrl             String                @map("video_url")
+
+  // GPS
   latitude             Decimal               @db.Decimal(10, 8)
   longitude            Decimal               @db.Decimal(11, 8)
-  videoUrl             String                @map("video_url")
+
+  // INCIDENT DETAILS
+  incidentDescription  String?               @map("incident_description")
+  roadCondition        RoadCondition         @default(UNKNOWN) @map("road_condition")
+  weatherCondition     WeatherCondition      @default(UNKNOWN) @map("weather_condition")
+  injuryStatus         InjuryStatus          @default(NONE) @map("injury_status")
+
+  // OTHER PARTY EVIDENCE
+  otherVehiclePlate    String?               @map("other_vehicle_plate")
+  otherVehicleMakeModel String?              @map("other_vehicle_make_model")
+  otherVehicleVideoUrl String?               @map("other_vehicle_video_url")
+  otherVehicleHash     String?               @unique @map("other_vehicle_hash")
+
+  // REPORT & ALERT
   isReportPaid         Boolean               @default(false) @map("is_report_paid")
+  emergencyAlertSent   Boolean               @default(false) @map("emergency_alert_sent")
+
   createdAt            DateTime              @default(now()) @map("created_at")
   verificationRequests VerificationRequest[]
 
@@ -63,19 +109,19 @@ model AccidentLog {
 
 // 3. VERIFICATION REQUESTS TABLE
 model VerificationRequest {
-  id                  Int              @id @default(autoincrement())
-  logHash             String           @map("log_hash")
-  accidentLog         AccidentLog      @relation(fields: [logHash], references: [logHash])
-  institutionalUserId Int?             @map("institutional_user_id")
+  id                  Int               @id @default(autoincrement())
+  logHash             String            @map("log_hash")
+  accidentLog         AccidentLog       @relation(fields: [logHash], references: [logHash])
+  institutionalUserId Int?              @map("institutional_user_id")
   institutionalUser   InstitutionalUser? @relation(fields: [institutionalUserId], references: [id])
-  requesterType       InstitutionType  @map("requester_type")
-  companyName         String           @map("company_name")
-  caseReferenceNo     String           @map("case_reference_no")
-  approvalStatus      RequestStatus    @default(PENDING) @map("approval_status")
-  driverApprovedAt    DateTime?        @map("driver_approved_at")
-  consentToken        String?          @unique @map("consent_token")
-  isPaymentSettled    Boolean          @default(false) @map("is_payment_settled")
-  createdAt           DateTime         @default(now()) @map("created_at")
+  requesterType       InstitutionType   @map("requester_type")
+  companyName         String            @map("company_name")
+  caseReferenceNo     String            @map("case_reference_no")
+  approvalStatus      RequestStatus     @default(PENDING) @map("approval_status")
+  driverApprovedAt    DateTime?         @map("driver_approved_at")
+  consentToken        String?           @unique @map("consent_token")
+  isPaymentSettled    Boolean           @default(false) @map("is_payment_settled")
+  createdAt           DateTime          @default(now()) @map("created_at")
 
   @@index([logHash])
   @@map("verification_requests")
