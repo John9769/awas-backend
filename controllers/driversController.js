@@ -57,3 +57,46 @@ exports.registerDriver = async (req, res) => {
         res.status(500).json({ error: "Internal registry error." });
     }
 };
+
+exports.lookupDriver = async (req, res) => {
+    try {
+        const plate = req.params.plate.toUpperCase().replace(/\s+/g, '');
+
+        const driver = await prisma.driver.findUnique({
+            where: { vehiclePlate: plate },
+            select: {
+                vehiclePlate: true,
+                vehicleMakeModel: true,
+                vehicleType: true,
+                mykadLastFour: true,
+                subStatus: true,
+                subExpiresAt: true
+            }
+        });
+
+        if (!driver) {
+            return res.status(404).json({
+                error: 'No AWAS Record Found for this vehicle.'
+            });
+        }
+
+        if (driver.subStatus !== 'ACTIVE') {
+            return res.status(403).json({
+                error: 'AWAS subscription expired. Please renew.'
+            });
+        }
+
+        return res.status(200).json({
+            vehiclePlate: driver.vehiclePlate,
+            vehicleMakeModel: driver.vehicleMakeModel,
+            vehicleType: driver.vehicleType,
+            mykadLastFour: driver.mykadLastFour,
+            subStatus: driver.subStatus,
+            subExpiresAt: driver.subExpiresAt
+        });
+
+    } catch (err) {
+        console.error('Lookup fault:', err);
+        return res.status(500).json({ error: 'Server error. Try again.' });
+    }
+};
