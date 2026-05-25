@@ -7,7 +7,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// ENUMS
 enum SubStatus {
   ACTIVE
   EXPIRED
@@ -52,7 +51,24 @@ enum InjuryStatus {
   SERIOUS
 }
 
-// 1. DRIVERS TABLE
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum PaymentType {
+  REGISTRATION
+  RENEWAL
+  WRIT
+}
+
+enum AffiliatePayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+}
+
 model Driver {
   id               Int           @id @default(autoincrement())
   vehiclePlate     String        @unique @map("vehicle_plate")
@@ -62,72 +78,60 @@ model Driver {
   phone            String?       @map("phone")
   subStatus        SubStatus     @default(ACTIVE) @map("sub_status")
   subExpiresAt     DateTime      @map("sub_expires_at")
+  referralCode     String        @unique @map("referral_code")
+  referredByCode   String?       @map("referred_by_code")
   createdAt        DateTime      @default(now()) @map("created_at")
   accidentLogs     AccidentLog[]
+  payments         Payment[]
+  affiliate        Affiliate?
 
   @@map("drivers")
 }
 
-// 2. ACCIDENT LOGS TABLE
 model AccidentLog {
-  id                   Int                   @id @default(autoincrement())
-
-  // WRIT REFERENCE
-  writNumber           String?               @unique @map("writ_number")
-
-  // OWN VEHICLE EVIDENCE
-  logHash              String                @unique @map("log_hash")
-  vehiclePlate         String                @map("vehicle_plate")
-  driver               Driver                @relation(fields: [vehiclePlate], references: [vehiclePlate])
-  videoUrl             String                @map("video_url")
-
-  // GPS
-  latitude             Decimal               @db.Decimal(10, 8)
-  longitude            Decimal               @db.Decimal(11, 8)
-
-  // INCIDENT DETAILS
-  incidentDescription  String?               @map("incident_description")
-  roadCondition        RoadCondition         @default(UNKNOWN) @map("road_condition")
-  weatherCondition     WeatherCondition      @default(UNKNOWN) @map("weather_condition")
-  injuryStatus         InjuryStatus          @default(NONE) @map("injury_status")
-
-  // OTHER PARTY EVIDENCE
-  otherVehiclePlate    String?               @map("other_vehicle_plate")
-  otherVehicleMakeModel String?              @map("other_vehicle_make_model")
-  otherVehicleVideoUrl String?               @map("other_vehicle_video_url")
-  otherVehicleHash     String?               @unique @map("other_vehicle_hash")
-
-  // REPORT & ALERT
-  isReportPaid         Boolean               @default(false) @map("is_report_paid")
-  emergencyAlertSent   Boolean               @default(false) @map("emergency_alert_sent")
-
-  createdAt            DateTime              @default(now()) @map("created_at")
-  verificationRequests VerificationRequest[]
+  id                    Int                   @id @default(autoincrement())
+  writNumber            String?               @unique @map("writ_number")
+  logHash               String                @unique @map("log_hash")
+  vehiclePlate          String                @map("vehicle_plate")
+  driver                Driver                @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  videoUrl              String                @map("video_url")
+  latitude              Decimal               @db.Decimal(10, 8)
+  longitude             Decimal               @db.Decimal(11, 8)
+  incidentDescription   String?               @map("incident_description")
+  roadCondition         RoadCondition         @default(UNKNOWN) @map("road_condition")
+  weatherCondition      WeatherCondition      @default(UNKNOWN) @map("weather_condition")
+  injuryStatus          InjuryStatus          @default(NONE) @map("injury_status")
+  otherVehiclePlate     String?               @map("other_vehicle_plate")
+  otherVehicleMakeModel String?               @map("other_vehicle_make_model")
+  otherVehicleVideoUrl  String?               @map("other_vehicle_video_url")
+  otherVehicleHash      String?               @unique @map("other_vehicle_hash")
+  isReportPaid          Boolean               @default(false) @map("is_report_paid")
+  emergencyAlertSent    Boolean               @default(false) @map("emergency_alert_sent")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  verificationRequests  VerificationRequest[]
 
   @@map("accident_logs")
 }
 
-// 3. VERIFICATION REQUESTS TABLE
 model VerificationRequest {
-  id                  Int               @id @default(autoincrement())
-  logHash             String            @map("log_hash")
-  accidentLog         AccidentLog       @relation(fields: [logHash], references: [logHash])
-  institutionalUserId Int?              @map("institutional_user_id")
+  id                  Int                @id @default(autoincrement())
+  logHash             String             @map("log_hash")
+  accidentLog         AccidentLog        @relation(fields: [logHash], references: [logHash])
+  institutionalUserId Int?               @map("institutional_user_id")
   institutionalUser   InstitutionalUser? @relation(fields: [institutionalUserId], references: [id])
-  requesterType       InstitutionType   @map("requester_type")
-  companyName         String            @map("company_name")
-  caseReferenceNo     String            @map("case_reference_no")
-  approvalStatus      RequestStatus     @default(PENDING) @map("approval_status")
-  driverApprovedAt    DateTime?         @map("driver_approved_at")
-  consentToken        String?           @unique @map("consent_token")
-  isPaymentSettled    Boolean           @default(false) @map("is_payment_settled")
-  createdAt           DateTime          @default(now()) @map("created_at")
+  requesterType       InstitutionType    @map("requester_type")
+  companyName         String             @map("company_name")
+  caseReferenceNo     String             @map("case_reference_no")
+  approvalStatus      RequestStatus      @default(PENDING) @map("approval_status")
+  driverApprovedAt    DateTime?          @map("driver_approved_at")
+  consentToken        String?            @unique @map("consent_token")
+  isPaymentSettled    Boolean            @default(false) @map("is_payment_settled")
+  createdAt           DateTime           @default(now()) @map("created_at")
 
   @@index([logHash])
   @@map("verification_requests")
 }
 
-// 4. INSTITUTIONAL USERS TABLE
 model InstitutionalUser {
   id                   Int                   @id @default(autoincrement())
   email                String                @unique
@@ -140,4 +144,72 @@ model InstitutionalUser {
   verificationRequests VerificationRequest[]
 
   @@map("institutional_users")
+}
+
+model Payment {
+  id               Int               @id @default(autoincrement())
+  vehiclePlate     String            @map("vehicle_plate")
+  driver           Driver            @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  amount           Decimal           @db.Decimal(10, 2)
+  type             PaymentType
+  status           PaymentStatus     @default(PENDING)
+  billplzBillId    String?           @unique @map("billplz_bill_id")
+  billplzUrl       String?           @map("billplz_url")
+  paidAt           DateTime?         @map("paid_at")
+  referralCode     String?           @map("referral_code")
+  affiliateCut     Decimal?          @db.Decimal(10, 2) @map("affiliate_cut")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  affiliateEarning AffiliateEarning?
+
+  @@map("payments")
+}
+
+model Affiliate {
+  id                Int                @id @default(autoincrement())
+  driverId          Int                @unique @map("driver_id")
+  driver            Driver             @relation(fields: [driverId], references: [id])
+  referralCode      String             @unique @map("referral_code")
+  totalReferrals    Int                @default(0) @map("total_referrals")
+  totalEarnings     Decimal            @default(0) @db.Decimal(10, 2) @map("total_earnings")
+  pendingPayout     Decimal            @default(0) @db.Decimal(10, 2) @map("pending_payout")
+  paidOut           Decimal            @default(0) @db.Decimal(10, 2) @map("paid_out")
+  bankName          String?            @map("bank_name")
+  bankAccountNumber String?            @map("bank_account_number")
+  bankAccountName   String?            @map("bank_account_name")
+  duitnowNumber     String?            @map("duitnow_number")
+  isActive          Boolean            @default(true) @map("is_active")
+  joinedAt          DateTime           @default(now()) @map("joined_at")
+  earnings          AffiliateEarning[]
+  payouts           AffiliatePayout[]
+
+  @@map("affiliates")
+}
+
+model AffiliateEarning {
+  id            Int         @id @default(autoincrement())
+  affiliateId   Int         @map("affiliate_id")
+  affiliate     Affiliate   @relation(fields: [affiliateId], references: [id])
+  paymentId     Int         @unique @map("payment_id")
+  payment       Payment     @relation(fields: [paymentId], references: [id])
+  referredPlate String      @map("referred_plate")
+  amount        Decimal     @db.Decimal(10, 2)
+  type          PaymentType
+  isPaid        Boolean     @default(false) @map("is_paid")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@map("affiliate_earnings")
+}
+
+model AffiliatePayout {
+  id            Int                   @id @default(autoincrement())
+  affiliateId   Int                   @map("affiliate_id")
+  affiliate     Affiliate             @relation(fields: [affiliateId], references: [id])
+  amount        Decimal               @db.Decimal(10, 2)
+  status        AffiliatePayoutStatus @default(PENDING)
+  method        String?
+  reference     String?
+  processedAt   DateTime?             @map("processed_at")
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  @@map("affiliate_payouts")
 }

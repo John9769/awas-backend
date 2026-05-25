@@ -32,12 +32,16 @@ const logRoutes = require('./routes/logs');
 const institutionRoutes = require('./routes/institutions');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const affiliateRoutes = require('./routes/affiliate');
+const paymentRoutes = require('./routes/payment');
 
 app.use('/api/drivers', driverRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/institutions', institutionRoutes);
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/affiliate', affiliateRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
