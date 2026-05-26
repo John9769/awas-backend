@@ -24,7 +24,7 @@ exports.getStaticMap = (req, res) => {
 
         mapRes.on('end', () => {
             const buffer = Buffer.concat(chunks);
-            const contentType = mapRes.headers['content-type'] || 'image/png';
+            const contentType = 'image/png';
             const base64 = buffer.toString('base64');
             const dataUri = `data:${contentType};base64,${base64}`;
 
