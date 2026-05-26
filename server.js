@@ -13,7 +13,7 @@ app.use(helmet());
 // CORS - locked to your domain
 app.use(cors({
     origin: process.env.ALLOWED_ORIGIN || '*',
-    methods: ['GET', 'POST', 'PATCH'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -34,6 +34,7 @@ const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const affiliateRoutes = require('./routes/affiliate');
 const paymentRoutes = require('./routes/payment');
+const mapRoutes = require('./routes/maps');
 
 app.use('/api/drivers', driverRoutes);
 app.use('/api/logs', logRoutes);
@@ -42,6 +43,7 @@ app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/payment', paymentRoutes);
+app.use('/api/maps', mapRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
