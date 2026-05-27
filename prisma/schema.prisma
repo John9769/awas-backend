@@ -69,6 +69,13 @@ enum AffiliatePayoutStatus {
   PAID
 }
 
+enum VideoStatus {
+  PENDING
+  PROCESSING
+  VERIFIED
+  FAILED
+}
+
 model Driver {
   id               Int           @id @default(autoincrement())
   vehiclePlate     String        @unique @map("vehicle_plate")
@@ -107,6 +114,11 @@ model AccidentLog {
   otherVehicleHash      String?               @unique @map("other_vehicle_hash")
   isReportPaid          Boolean               @default(false) @map("is_report_paid")
   emergencyAlertSent    Boolean               @default(false) @map("emergency_alert_sent")
+  videoHash             String?               @map("video_hash")
+  rawVideoUrl           String?               @map("raw_video_url")
+  sealedVideoUrl        String?               @map("sealed_video_url")
+  videoStatus           VideoStatus           @default(PENDING) @map("video_status")
+  videoSealedAt         DateTime?             @map("video_sealed_at")
   createdAt             DateTime              @default(now()) @map("created_at")
   verificationRequests  VerificationRequest[]
 
