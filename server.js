@@ -14,7 +14,7 @@ app.use(helmet());
 app.use(cors({
     origin: process.env.ALLOWED_ORIGIN || '*',
     methods: ['GET', 'POST', 'PATCH', 'PUT'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
 }));
 
 app.use(express.json());
