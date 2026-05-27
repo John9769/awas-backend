@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AWAS Admin Cockpit</title>
+<style>
+:root {
+    --bg: #080c14; --bg2: #0f1623; --card: #1e293b;
+    --text: #f1f5f9; --muted: #94a3b8; --border: #334155;
+    --red: #dc2626; --green: #16a34a; --blue: #2563eb;
+    --yellow: #eab308; --orange: #ea580c;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* KEY GATE */
+#key-gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; flex-direction: column; gap: 16px; }
+#key-gate input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 12px 16px; border-radius: 8px; font-size: 1rem; width: 300px; text-align: center; letter-spacing: 2px; }
+#key-gate button { background: var(--red); border: none; color: white; padding: 12px 32px; border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 1rem; }
+#key-gate .logo { font-size: 2.5rem; font-weight: 900; letter-spacing: 4px; margin-bottom: 8px; }
+#key-gate .sub { font-size: 0.85rem; color: var(--muted); margin-bottom: 24px; }
+
+/* MAIN */
+#app { display: none; }
+
+/* HEADER */
+.header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+.header-logo { font-size: 1.4rem; font-weight: 900; letter-spacing: 3px; }
+.header-right { display: flex; align-items: center; gap: 16px; font-size: 0.82rem; color: var(--muted); }
+.live-badge { background: rgba(22,163,74,0.15); color: #4ade80; border: 1px solid rgba(22,163,74,0.3); padding: 4px 12px; border-radius: 100px; font-size: 0.72rem; font-weight: 700; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.6} }
+
+/* TABS */
+.tabs { display: flex; gap: 0; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 24px; overflow-x: auto; }
+.tab { padding: 14px 20px; font-size: 0.82rem; font-weight: 600; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; transition: all 0.2s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--red); }
+.tab .badge { background: var(--red); color: white; font-size: 0.65rem; font-weight: 800; padding: 2px 6px; border-radius: 100px; margin-left: 6px; }
+
+/* CONTENT */
+.content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* STAT CARDS */
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat { background: var(--card); border-radius: 12px; padding: 20px; border: 1px solid var(--border); }
+.stat-num { font-size: 2rem; font-weight: 900; margin-bottom: 4px; }
+.stat-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat.green { border-color: rgba(22,163,74,0.3); }
+.stat.green .stat-num { color: #4ade80; }
+.stat.red { border-color: rgba(220,38,38,0.3); }
+.stat.red .stat-num { color: #fca5a5; }
+.stat.blue { border-color: rgba(37,99,235,0.3); }
+.stat.blue .stat-num { color: #60a5fa; }
+.stat.yellow { border-color: rgba(234,179,8,0.3); }
+.stat.yellow .stat-num { color: #fbbf24; }
+
+/* SECTION HEADER */
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.section-title { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.btn-refresh { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; font-weight: 600; }
+.btn-refresh:hover { border-color: var(--blue); }
+
+/* TABLE */
+.table-wrap { background: var(--card); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+th { background: var(--bg2); padding: 12px 16px; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); white-space: nowrap; }
+td { padding: 12px 16px; border-top: 1px solid var(--border); vertical-align: middle; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.mono { font-family: monospace; font-size: 0.78rem; }
+
+/* BADGES */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge-green { background: rgba(22,163,74,0.15); color: #4ade80; }
+.badge-red { background: rgba(220,38,38,0.15); color: #fca5a5; }
+.badge-yellow { background: rgba(234,179,8,0.15); color: #fbbf24; }
+.badge-blue { background: rgba(37,99,235,0.15); color: #60a5fa; }
+.badge-gray { background: rgba(148,163,184,0.15); color: #94a3b8; }
+
+/* ACTION BUTTONS */
+.btn-sm { padding: 5px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; cursor: pointer; border: none; }
+.btn-approve { background: var(--green); color: white; }
+.btn-revoke { background: var(--red); color: white; }
+.btn-play { background: var(--blue); color: white; }
+
+/* SEARCH */
+.search-bar { margin-bottom: 16px; }
+.search-bar input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; width: 300px; }
+.search-bar input:focus { border-color: var(--blue); outline: none; }
+
+/* VIDEO MODAL */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal-box { background: var(--card); border-radius: 16px; padding: 24px; max-width: 800px; width: 90%; border: 1px solid var(--border); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.modal-title { font-size: 0.88rem; font-weight: 700; }
+.modal-close { background: none; border: none; color: var(--muted); font-size: 1.4rem; cursor: pointer; }
+.modal-video { width: 100%; border-radius: 8px; background: #000; }
+.modal-meta { margin-top: 12px; font-size: 0.75rem; color: var(--muted); line-height: 1.8; font-family: monospace; background: var(--bg2); padding: 12px; border-radius: 8px; }
+
+/* LOADING */
+.loading { text-align: center; padding: 40px; color: var(--muted); font-size: 0.88rem; }
+.empty { text-align: center; padding: 40px; color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<!-- KEY GATE -->
+<div id="key-gate">
+    <div class="logo">AWAS</div>
+    <div class="sub">Admin Cockpit — Restricted Access</div>
+    <input type="password" id="admin-key-input" placeholder="Enter Admin Key">
+    <button onclick="unlockCockpit()">Access Cockpit</button>
+    <div id="key-error" style="color:#fca5a5;font-size:0.82rem;display:none;">Invalid key. Access denied.</div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+    <div class="header">
+        <div class="header-logo">AWAS</div>
+        <div class="header-right">
+            <span class="live-badge">⬤ LIVE</span>
+            <span id="last-refresh">Loading...</span>
+            <span style="cursor:pointer;color:#fca5a5;" onclick="logout()">Logout</span>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('overview')">📊 Overview</div>
+        <div class="tab" onclick="switchTab('users')">👥 Users</div>
+        <div class="tab" onclick="switchTab('writs')">📹 Writs & Videos</div>
+        <div class="tab" onclick="switchTab('institutions')">🏢 Institutions <span class="badge" id="inst-badge">0</span></div>
+        <div class="tab" onclick="switchTab('payments')">💰 Payments</div>
+        <div class="tab" onclick="switchTab('affiliates')">🔗 Affiliates</div>
+        <div class="tab" onclick="switchTab('requests')">📋 Verification Requests <span class="badge" id="req-badge">0</span></div>
+    </div>
+
+    <div class="content">
+
+        <!-- OVERVIEW -->
+        <div class="tab-panel active" id="panel-overview">
+            <div class="stats-row" id="overview-stats">
+                <div class="loading">Loading dashboard...</div>
+            </div>
+        </div>
+
+        <!-- USERS -->
+        <div class="tab-panel" id="panel-users">
+            <div class="section-header">
+                <div class="section-title">All Registered Drivers</div>
+                <button class="btn-refresh" onclick="loadUsers()">↻ Refresh</button>
+            </div>
+            <div class="search-bar"><input type="text" id="user-search" placeholder="Search by plate..." oninput="filterUsers()"></div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Plate</th><th>Vehicle</th><th>Type</th><th>Status</th><th>Expires</th><th>Referral Code</th><th>Referred By</th><th>Joined</th></tr></thead>
+                    <tbody id="users-tbody"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- WRITS & VIDEOS -->
+        <div class="tab-panel" id="panel-writs">
+            <div class="section-header">
+                <div class="section-title">Accident Logs & Sealed Videos</div>
+                <button class="btn-refresh" onclick="loadWrits()">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Writ Number</th><th>Plate</th><th>Video Status</th><th>SHA-256</th><th>Sealed At</th><th>Date</th><th>Action</th></tr></thead>
+                    <tbody id="writs-tbody"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- INSTITUTIONS -->
+        <div class="tab-panel" id="panel-institutions">
+            <div class="section-header">
+                <div class="section-title">Institutional Users (Insurers & Lawyers)</div>
+                <button class="btn-refresh" onclick="loadInstitutions()">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Company</th><th>Type</th><th>Email</th><th>License ID</th><th>Status</th><th>Joined</th><th>Action</th></tr></thead>
+                    <tbody id="inst-tbody"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- PAYMENTS -->
+        <div class="tab-panel" id="panel-payments">
+            <div class="section-header">
+                <div class="section-title">Payment Records</div>
+                <button class="btn-refresh" onclick="loadPayments()">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Plate</th><th>Type</th><th>Amount</th><th>Status</th><th>Paid At</th><th>Affiliate Cut</th></tr></thead>
+                    <tbody id="payments-tbody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- AFFILIATES -->
+        <div class="tab-panel" id="panel-affiliates">
+            <div class="section-header">
+                <div class="section-title">Affiliate Program Members</div>
+                <button class="btn-refresh" onclick="loadAffiliates()">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Plate</th><th>Code</th><th>Referrals</th><th>Total Earned</th><th>Pending</th><th>Paid Out</th><th>Bank</th><th>Joined</th></tr></thead>
+                    <tbody id="affiliates-tbody"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- VERIFICATION REQUESTS -->
+        <div class="tab-panel" id="panel-requests">
+            <div class="section-header">
+                <div class="section-title">Institutional Evidence Requests</div>
+                <button class="btn-refresh" onclick="loadRequests()">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Writ</th><th>Company</th><th>Type</th><th>Case Ref</th><th>Status</th><th>Driver Consent</th><th>Payment</th><th>Date</th></tr></thead>
+                    <tbody id="requests-tbody"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- VIDEO MODAL -->
+<div class="modal-overlay" id="video-modal">
+    <div class="modal-box">
+        <div class="modal-header">
+            <div class="modal-title" id="modal-writ-title">Sealed Evidence Video</div>
+            <button class="modal-close" onclick="closeVideoModal()">✕</button>
+        </div>
+        <video class="modal-video" id="modal-video" controls crossorigin="anonymous"></video>
+        <div class="modal-meta" id="modal-meta"></div>
+    </div>
+</div>
+
+<script>
+const API_BASE = 'https://awas-backend.onrender.com';
+let ADMIN_KEY = '';
+let allUsers = [];
+
+function unlockCockpit() {
+    const key = document.getElementById('admin-key-input').value.trim();
+    if (!key) return;
+    ADMIN_KEY = key;
+    // Verify key
+    fetch(`${API_BASE}/api/admin/dashboard`, { headers: { 'x-admin-key': key } })
+        .then(res => {
+            if (res.ok) {
+                document.getElementById('key-gate').style.display = 'none';
+                document.getElementById('app').style.display = 'block';
+                loadOverview();
+            } else {
+                document.getElementById('key-error').style.display = 'block';
+                ADMIN_KEY = '';
+            }
+        })
+        .catch(() => { document.getElementById('key-error').style.display = 'block'; });
+}
+
+function logout() {
+    ADMIN_KEY = '';
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('key-gate').style.display = 'flex';
+    document.getElementById('admin-key-input').value = '';
+}
+
+function switchTab(name) {
+    document.querySelectorAll('.tab').forEach((t, i) => {
+        const panels = ['overview','users','writs','institutions','payments','affiliates','requests'];
+        t.classList.toggle('active', panels[i] === name);
+    });
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById(`panel-${name}`).classList.add('active');
+
+    if (name === 'users') loadUsers();
+    if (name === 'writs') loadWrits();
+    if (name === 'institutions') loadInstitutions();
+    if (name === 'payments') loadPayments();
+    if (name === 'affiliates') loadAffiliates();
+    if (name === 'requests') loadRequests();
+}
+
+function headers() { return { 'x-admin-key': ADMIN_KEY, 'Content-Type': 'application/json' }; }
+
+function fmtDate(d) { return d ? new Date(d).toLocaleString('en-MY') : '—'; }
+function fmtMoney(n) { return `RM${parseFloat(n||0).toFixed(2)}`; }
+
+// OVERVIEW
+async function loadOverview() {
+    const res = await fetch(`${API_BASE}/api/admin/dashboard`, { headers: headers() });
+    const d = await res.json();
+    document.getElementById('inst-badge').innerText = d.pendingInstitutions || 0;
+    document.getElementById('req-badge').innerText = d.pendingConsents || 0;
+    document.getElementById('last-refresh').innerText = `Last refresh: ${new Date().toLocaleTimeString()}`;
+
+    document.getElementById('overview-stats').innerHTML = `
+        <div class="stat green"><div class="stat-num">${d.totalDrivers}</div><div class="stat-label">Total Users</div></div>
+        <div class="stat green"><div class="stat-num">+${d.newDriversToday}</div><div class="stat-label">New Today</div></div>
+        <div class="stat blue"><div class="stat-num">+${d.newDriversMonth}</div><div class="stat-label">This Month</div></div>
+        <div class="stat blue"><div class="stat-num">${d.totalLogs}</div><div class="stat-label">Total Writs</div></div>
+        <div class="stat green"><div class="stat-num">${d.videos?.verified||0}</div><div class="stat-label">Videos Sealed</div></div>
+        <div class="stat yellow"><div class="stat-num">${d.videos?.pending||0}</div><div class="stat-label">Videos Pending</div></div>
+        <div class="stat red"><div class="stat-num">${d.videos?.failed||0}</div><div class="stat-label">Videos Failed</div></div>
+        <div class="stat yellow"><div class="stat-num">${d.pendingInstitutions}</div><div class="stat-label">Pending Institutions</div></div>
+        <div class="stat yellow"><div class="stat-num">${d.pendingConsents}</div><div class="stat-label">Pending Consents</div></div>
+        <div class="stat green"><div class="stat-num">${fmtMoney(d.totalRevenue)}</div><div class="stat-label">Total Revenue</div></div>
+    `;
+}
+
+// USERS
+async function loadUsers() {
+    document.getElementById('users-tbody').innerHTML = '<tr><td colspan="9" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/users`, { headers: headers() });
+    const d = await res.json();
+    allUsers = d.users || [];
+    renderUsers(allUsers);
+}
+
+function renderUsers(users) {
+    if (!users.length) { document.getElementById('users-tbody').innerHTML = '<tr><td colspan="9" class="empty">No users found.</td></tr>'; return; }
+    document.getElementById('users-tbody').innerHTML = users.map((u, i) => `
+        <tr>
+            <td class="mono">${i+1}</td>
+            <td><strong>${u.vehiclePlate}</strong></td>
+            <td>${u.vehicleMakeModel}</td>
+            <td>${u.vehicleType}</td>
+            <td><span class="badge ${u.subStatus==='ACTIVE'?'badge-green':'badge-red'}">${u.subStatus}</span></td>
+            <td class="mono">${fmtDate(u.subExpiresAt)}</td>
+            <td class="mono">${u.referralCode}</td>
+            <td class="mono">${u.referredByCode||'—'}</td>
+            <td class="mono">${fmtDate(u.createdAt)}</td>
+        </tr>
+    `).join('');
+}
+
+function filterUsers() {
+    const q = document.getElementById('user-search').value.toUpperCase();
+    renderUsers(allUsers.filter(u => u.vehiclePlate.includes(q) || u.vehicleMakeModel.toUpperCase().includes(q)));
+}
+
+// WRITS
+async function loadWrits() {
+    document.getElementById('writs-tbody').innerHTML = '<tr><td colspan="8" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/writs`, { headers: headers() });
+    const d = await res.json();
+    const writs = d.writs || [];
+    if (!writs.length) { document.getElementById('writs-tbody').innerHTML = '<tr><td colspan="8" class="empty">No writs found.</td></tr>'; return; }
+    document.getElementById('writs-tbody').innerHTML = writs.map((w, i) => `
+        <tr>
+            <td class="mono">${i+1}</td>
+            <td class="mono"><strong>${w.writNumber||'—'}</strong></td>
+            <td><strong>${w.vehiclePlate}</strong></td>
+            <td><span class="badge ${w.videoStatus==='VERIFIED'?'badge-green':w.videoStatus==='FAILED'?'badge-red':w.videoStatus==='PROCESSING'?'badge-blue':'badge-gray'}">${w.videoStatus}</span></td>
+            <td class="mono" style="font-size:0.68rem;max-width:120px;overflow:hidden;text-overflow:ellipsis;">${w.videoHash?w.videoHash.substring(0,20)+'...':'—'}</td>
+            <td class="mono">${fmtDate(w.videoSealedAt)}</td>
+            <td class="mono">${fmtDate(w.createdAt)}</td>
+            <td>${w.videoStatus==='VERIFIED'?`<button class="btn-sm btn-play" onclick="playVideo('${w.logHash}','${w.writNumber}','${w.videoHash}','${w.vehiclePlate}','${w.sealedVideoUrl}')">▶ Play</button>`:'—'}</td>
+        </tr>
+    `).join('');
+}
+
+// INSTITUTIONS
+async function loadInstitutions() {
+    document.getElementById('inst-tbody').innerHTML = '<tr><td colspan="8" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/institutions`, { headers: headers() });
+    const d = await res.json();
+    const insts = d.institutions || [];
+    if (!insts.length) { document.getElementById('inst-tbody').innerHTML = '<tr><td colspan="8" class="empty">No institutions found.</td></tr>'; return; }
+    document.getElementById('inst-tbody').innerHTML = insts.map((inst, i) => `
+        <tr>
+            <td>${i+1}</td>
+            <td><strong>${inst.companyName}</strong></td>
+            <td><span class="badge ${inst.requesterType==='INSURANCE'?'badge-blue':'badge-yellow'}">${inst.requesterType}</span></td>
+            <td>${inst.email}</td>
+            <td class="mono">${inst.licenseId}</td>
+            <td><span class="badge ${inst.isApproved?'badge-green':'badge-red'}">${inst.isApproved?'APPROVED':'PENDING'}</span></td>
+            <td class="mono">${fmtDate(inst.createdAt)}</td>
+            <td>
+                ${!inst.isApproved?`<button class="btn-sm btn-approve" onclick="approveInst(${inst.id})">Approve</button>`:''}
+                ${inst.isApproved?`<button class="btn-sm btn-revoke" onclick="revokeInst(${inst.id})">Revoke</button>`:''}
+            </td>
+        </tr>
+    `).join('');
+}
+
+async function approveInst(id) {
+    if (!confirm('Approve this institution?')) return;
+    await fetch(`${API_BASE}/api/admin/institutions/${id}/approve`, { method: 'PATCH', headers: headers() });
+    loadInstitutions();
+}
+async function revokeInst(id) {
+    if (!confirm('Revoke access for this institution?')) return;
+    await fetch(`${API_BASE}/api/admin/institutions/${id}/revoke`, { method: 'PATCH', headers: headers() });
+    loadInstitutions();
+}
+
+// PAYMENTS
+async function loadPayments() {
+    document.getElementById('payments-tbody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/payments`, { headers: headers() });
+    const d = await res.json();
+    const payments = d.payments || [];
+    if (!payments.length) { document.getElementById('payments-tbody').innerHTML = '<tr><td colspan="7" class="empty">No payments found.</td></tr>'; return; }
+    document.getElementById('payments-tbody').innerHTML = payments.map((p, i) => `
+        <tr>
+            <td>${i+1}</td>
+            <td><strong>${p.vehiclePlate}</strong></td>
+            <td><span class="badge badge-blue">${p.type}</span></td>
+            <td><strong>${fmtMoney(p.amount)}</strong></td>
+            <td><span class="badge ${p.status==='PAID'?'badge-green':p.status==='FAILED'?'badge-red':'badge-yellow'}">${p.status}</span></td>
+            <td class="mono">${fmtDate(p.paidAt)}</td>
+            <td>${p.affiliateCut?fmtMoney(p.affiliateCut):'—'}</td>
+        </tr>
+    `).join('');
+}
+
+// AFFILIATES
+async function loadAffiliates() {
+    document.getElementById('affiliates-tbody').innerHTML = '<tr><td colspan="9" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/affiliates`, { headers: headers() });
+    const d = await res.json();
+    const affiliates = d.affiliates || [];
+    if (!affiliates.length) { document.getElementById('affiliates-tbody').innerHTML = '<tr><td colspan="9" class="empty">No affiliates found.</td></tr>'; return; }
+    document.getElementById('affiliates-tbody').innerHTML = affiliates.map((a, i) => `
+        <tr>
+            <td>${i+1}</td>
+            <td><strong>${a.driver?.vehiclePlate||'—'}</strong></td>
+            <td class="mono">${a.referralCode}</td>
+            <td>${a.totalReferrals}</td>
+            <td><strong style="color:#4ade80">${fmtMoney(a.totalEarnings)}</strong></td>
+            <td style="color:#fbbf24">${fmtMoney(a.pendingPayout)}</td>
+            <td>${fmtMoney(a.paidOut)}</td>
+            <td class="mono" style="font-size:0.72rem;">${a.bankName||'—'}<br>${a.bankAccountNumber||''}</td>
+            <td class="mono">${fmtDate(a.joinedAt)}</td>
+        </tr>
+    `).join('');
+}
+
+// REQUESTS
+async function loadRequests() {
+    document.getElementById('requests-tbody').innerHTML = '<tr><td colspan="9" class="loading">Loading...</td></tr>';
+    const res = await fetch(`${API_BASE}/api/admin/verification-requests`, { headers: headers() });
+    const d = await res.json();
+    const requests = d.requests || [];
+    if (!requests.length) { document.getElementById('requests-tbody').innerHTML = '<tr><td colspan="9" class="empty">No requests found.</td></tr>'; return; }
+    document.getElementById('requests-tbody').innerHTML = requests.map((r, i) => `
+        <tr>
+            <td>${i+1}</td>
+            <td class="mono">${r.accidentLog?.writNumber||'—'}</td>
+            <td><strong>${r.companyName}</strong></td>
+            <td><span class="badge ${r.requesterType==='INSURANCE'?'badge-blue':'badge-yellow'}">${r.requesterType}</span></td>
+            <td class="mono">${r.caseReferenceNo}</td>
+            <td><span class="badge ${r.approvalStatus==='APPROVED'?'badge-green':r.approvalStatus==='REJECTED'?'badge-red':'badge-yellow'}">${r.approvalStatus}</span></td>
+            <td><span class="badge ${r.driverApprovedAt?'badge-green':'badge-gray'}">${r.driverApprovedAt?'GIVEN':'PENDING'}</span></td>
+            <td><span class="badge ${r.isPaymentSettled?'badge-green':'badge-yellow'}">${r.isPaymentSettled?'PAID':'UNPAID'}</span></td>
+            <td class="mono">${fmtDate(r.createdAt)}</td>
+        </tr>
+    `).join('');
+}
+
+// VIDEO MODAL
+function playVideo(logHash, writNumber, videoHash, plate, sealedUrl) {
+    const videoUrl = `${API_BASE}/api/admin/video/${logHash}?key=${encodeURIComponent(ADMIN_KEY)}`;
+    document.getElementById('modal-writ-title').innerText = `${writNumber} — ${plate}`;
+    document.getElementById('modal-video').src = videoUrl;
+    document.getElementById('modal-meta').innerHTML = `
+        <strong>Writ:</strong> ${writNumber}<br>
+        <strong>Plate:</strong> ${plate}<br>
+        <strong>SHA-256:</strong> ${videoHash}<br>
+        <strong>Status:</strong> VERIFIED ✅
+    `;
+    document.getElementById('video-modal').classList.add('show');
+}
+
+function closeVideoModal() {
+    document.getElementById('video-modal').classList.remove('show');
+    document.getElementById('modal-video').src = '';
+}
+
+// Enter key on password field
+document.getElementById('admin-key-input').addEventListener('keypress', e => {
+    if (e.key === 'Enter') unlockCockpit();
+});
+</script>
+</body>
+</html>

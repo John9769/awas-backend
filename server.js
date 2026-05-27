@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -47,6 +48,11 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/maps', mapRoutes);
+
+// Admin cockpit
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
 
 // Health check
 app.get('/api/health', (req, res) => {
