@@ -170,6 +170,7 @@ exports.streamVideo = async (req, res) => {
 
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         res.setHeader('Content-Disposition', `inline; filename="awas-sealed-${logHash.substring(0, 8)}.mp4"`);
         if (response.headers['content-range']) res.setHeader('Content-Range', response.headers['content-range']);
         if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);

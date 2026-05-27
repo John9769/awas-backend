@@ -8,7 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Security headers
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false
+}));
 
 // CORS - locked to your domain
 app.use(cors({
