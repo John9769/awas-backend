@@ -169,9 +169,10 @@ exports.uploadVideo = async (req, res) => {
         const writNumber = accidentLog.writNumber || 'AWAS/MY/PENDING';
         const timestamp = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
         const overlayText = [
-            `AWAS BUKTI TERSEGEL`,
+            `AWAS BUKTI TERSEDIA`,
             `Writ: ${writNumber}`,
-            `SHA-256: ${videoHash}`,
+            `SHA-256: ${videoHash.substring(0, 32)}`,
+            `${videoHash.substring(32, 64)}`,
             `${timestamp} MYT`
         ].join('\n');
 
