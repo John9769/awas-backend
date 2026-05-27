@@ -161,11 +161,20 @@ exports.streamVideo = async (req, res) => {
             return res.status(404).json({ error: 'Sealed video not found.' });
         }
 
-        // Fetch from Cloudinary and stream back
-        const response = await axios.get(log.sealedVideoUrl, { responseType: 'stream' });
+        // Fetch from Cloudinary and stream back with range support
+        const rangeHeader = req.headers['range'];
+        const axiosConfig = { responseType: 'stream', headers: {} };
+        if (rangeHeader) axiosConfig.headers['Range'] = rangeHeader;
+
+        const response = await axios.get(log.sealedVideoUrl, axiosConfig);
 
         res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Disposition', `inline; filename="awas-sealed-${logHash.substring(0, 8)}.mp4"`);
+        if (response.headers['content-range']) res.setHeader('Content-Range', response.headers['content-range']);
+        if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.status(response.status);
         response.data.pipe(res);
 
     } catch (error) {
