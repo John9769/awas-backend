@@ -171,18 +171,21 @@ exports.uploadVideo = async (req, res) => {
         const hashShort = videoHash.substring(0, 32);
 
         const overlayText = [
-            `AWAS BUKTI TERSEGEL`,
-            `Writ\\: ${writNumber}`,
-            `SHA-256\\: ${hashShort}...`,
+            `AWAS BUKTI TERSEDIA`,
+            `Writ: ${writNumber}`,
+            `SHA-256: ${hashShort}...`,
             `${timestamp} MYT`
         ].join('\n');
 
+        const overlayTextPath = path.join('/tmp', `text_${logHash.substring(0, 16)}.txt`);
+        fs.writeFileSync(overlayTextPath, overlayText);
+
         const ffmpegCmd = [
             'ffmpeg -y',
-            `-i ${rawTempPath}`,
-            `-vf "drawtext=text='${overlayText}':fontcolor=white:fontsize=14:box=1:boxcolor=black@0.7:boxborderw=8:x=10:y=10:line_spacing=4"`,
+            `-i "${rawTempPath}"`,
+            `-vf "drawtext=textfile='${overlayTextPath}':fontcolor=white:fontsize=14:box=1:boxcolor=black@0.7:boxborderw=8:x=10:y=10:line_spacing=4"`,
             `-codec:a copy`,
-            sealedTempPath
+            `"${sealedTempPath}"`
         ].join(' ');
 
         console.log(`AWAS FFmpeg running...`);
@@ -216,6 +219,7 @@ exports.uploadVideo = async (req, res) => {
         // Cleanup temp files
         if (fs.existsSync(rawTempPath)) fs.unlinkSync(rawTempPath);
         if (fs.existsSync(sealedTempPath)) fs.unlinkSync(sealedTempPath);
+        if (fs.existsSync(overlayTextPath)) fs.unlinkSync(overlayTextPath);
 
         console.log(`AWAS Video sealed successfully for ${logHash}`);
 
