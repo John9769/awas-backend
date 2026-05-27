@@ -168,12 +168,10 @@ exports.uploadVideo = async (req, res) => {
         // Step 4: Run FFmpeg to burn overlay onto video
         const writNumber = accidentLog.writNumber || 'AWAS/MY/PENDING';
         const timestamp = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
-        const hashShort = videoHash.substring(0, 32);
-
         const overlayText = [
-            `AWAS BUKTI TERSEDIA`,
+            `AWAS BUKTI TERSEGEL`,
             `Writ: ${writNumber}`,
-            `SHA-256: ${hashShort}...`,
+            `SHA-256: ${videoHash}`,
             `${timestamp} MYT`
         ].join('\n');
 
