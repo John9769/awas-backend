@@ -11,7 +11,8 @@ const PORT = process.env.PORT || 5000;
 // Security headers
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginEmbedderPolicy: false
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: false
 }));
 
 // CORS - locked to your domain
