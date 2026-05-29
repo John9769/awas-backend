@@ -124,7 +124,7 @@ exports.unlockEvidence = async (req, res) => {
             data: { isPaymentSettled: true }
         });
 
-        const accessRate = ticket.requesterType === 'INSURANCE' ? 'RM 50.00' : 'RM 100.00';
+        const accessRate = 'RM 100.00';
         const log = ticket.accidentLog;
         const driver = log.driver;
 

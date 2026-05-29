@@ -4,7 +4,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-const AFFILIATE_CUT = 9.99;
+const AFFILIATE_CUT = 4.99;
 
 // BECOME AFFILIATE
 // Any active registered driver can become an affiliate
@@ -55,7 +55,7 @@ exports.joinAffiliate = async (req, res) => {
             referralCode: affiliate.referralCode,
             referralLink: `https://awas-pwa.vercel.app/register.html?ref=${affiliate.referralCode}`,
             commissionPerReferral: `RM${AFFILIATE_CUT}`,
-            note: 'Share your link. Every registration earns you RM9.99 — including renewals every year.'
+            note: 'Share your link. Every registration earns you RM4.99 — including renewals every year.'
         });
 
     } catch (err) {

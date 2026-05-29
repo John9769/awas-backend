@@ -7,7 +7,7 @@ const { creditAffiliateEarning } = require('./affiliateController');
 
 const REGISTRATION_FEE = 29.99;
 const WRIT_FEE = 8.00;
-const AFFILIATE_CUT = 9.99;
+const AFFILIATE_CUT = 4.99;
 
 // CREATE REGISTRATION BILL (Billplz)
 exports.createRegistrationBill = async (req, res) => {

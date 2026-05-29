@@ -28,7 +28,7 @@ exports.registerDriver = async (req, res) => {
         if (!/^\d{4}$/.test(mykadLastFour)) {
             return res.status(400).json({ error: "Invalid MyKad input. Last 4 digits only." });
         }
-        if (vehicleType && !['CAR', 'MOTORCYCLE'].includes(vehicleType)) {
+        if (vehicleType && !['CAR', 'MOTORCYCLE', 'LORRY', 'BUS', 'VAN'].includes(vehicleType)) {
             return res.status(400).json({ error: "Invalid vehicle type." });
         }
 
@@ -140,7 +140,7 @@ exports.validateReferralCode = async (req, res) => {
             return res.status(404).json({ valid: false, message: 'Referral code not found or inactive.' });
         }
 
-        return res.status(200).json({ valid: true, message: 'Referral code valid. You will earn RM9.99 discount.' });
+        return res.status(200).json({ valid: true, message: 'Referral code valid.' });
 
     } catch (err) {
         console.error('Referral validation fault:', err);
