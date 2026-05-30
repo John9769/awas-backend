@@ -18,6 +18,8 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+const LPR_CONFIDENCE_THRESHOLD = 0.7;
+
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 const uploadBufferToCloudinary = (buffer, options) => {
@@ -126,49 +128,146 @@ const runLpr = async (videoPath, logHashShort) => {
     }
 };
 
-// ─── SUBMIT LOG ─────────────────────────────────────────────────────────────
+// ─── VERIFY & SEAL (THE LPR GATE — single endpoint) ──────────────────────────
+//
+// This is the ONE endpoint that enforces the gate. Flow:
+//   1. Receive video + claimed plate + GPS + incident metadata
+//   2. Run LPR on the video to read the ACTUAL plate from the footage
+//   3. Reject if no plate readable, or confidence too low
+//   4. Look up the detected plate in the drivers table (paid accounts only)
+//   5. Reject if no paid/active driver matches the plate seen in the video
+//   6. Reject if the detected plate does not match the plate the user logged in with
+//   7. ONLY on full pass: create the AccidentLog, issue the writ, seal the video
+//
+// No writ is ever issued unless steps 1-6 all pass. Nothing is written to the
+// database on rejection. The video itself is the source of truth.
 
-exports.submitLog = async (req, res) => {
+exports.verifyAndSeal = async (req, res) => {
+    console.log('AWAS verifyAndSeal called');
+    let rawTempPath = null;
+    let sealedTempPath = null;
+    let overlayTextPath = null;
+
     try {
         const {
-            logHash, vehiclePlate, latitude, longitude, videoUrl,
+            logHash, claimedPlate, latitude, longitude,
             incidentDescription, roadCondition, weatherCondition, injuryStatus,
             otherVehiclePlate, otherVehicleMakeModel, otherVehicleVideoUrl, otherVehicleHash
         } = req.body;
 
-        if (!logHash || !vehiclePlate || !latitude || !longitude) {
+        // ── Basic input validation ──
+        if (!logHash || !claimedPlate || !latitude || !longitude) {
             return res.status(400).json({ error: "Incomplete accident data." });
         }
-
         if (!/^[a-f0-9]{64}$/i.test(logHash)) {
             return res.status(400).json({ error: "Invalid hash format. Must be SHA-256." });
         }
-
         if (otherVehicleHash && !/^[a-f0-9]{64}$/i.test(otherVehicleHash)) {
             return res.status(400).json({ error: "Invalid other vehicle hash format." });
         }
+        if (!req.file) {
+            return res.status(400).json({ error: "Video file required." });
+        }
+
+        // Guard against duplicate submission of the same sealed evidence
+        const existing = await prisma.accidentLog.findUnique({ where: { logHash } });
+        if (existing) {
+            return res.status(409).json({ error: "Evidence already sealed." });
+        }
+
+        const normalizedClaimedPlate = claimedPlate.toUpperCase().replace(/\s+/g, '');
+        const videoBuffer = req.file.buffer;
+        const logHashShort = logHash.substring(0, 16);
+
+        // ── STEP 1: Write video to /tmp for FFmpeg ──
+        rawTempPath = path.join('/tmp', `raw_${logHashShort}.mp4`);
+        fs.writeFileSync(rawTempPath, videoBuffer);
+        console.log(`AWAS LPR: Running plate check. Claimed plate: ${normalizedClaimedPlate}`);
+
+        // ── STEP 2: LPR — read the plate physically present in the video ──
+        const lprResult = await runLpr(rawTempPath, logHashShort);
+        console.log(`AWAS LPR result: ${JSON.stringify(lprResult)}`);
+
+        // ── STEP 3: Reject if unreadable / low confidence ──
+        if (!lprResult || !lprResult.plate || lprResult.confidence < LPR_CONFIDENCE_THRESHOLD) {
+            console.warn(`AWAS LPR: Rejected — plate unreadable for ${logHash}`);
+            cleanupFiles(rawTempPath);
+            return res.status(422).json({
+                error: "Video rejected. Plat kenderaan tidak dapat dibaca dengan jelas. Pastikan plat kenderaan anda kelihatan jelas dalam video.",
+                reason: "UNREADABLE"
+            });
+        }
+
+        const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
+        console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence}`);
+
+        // ── STEP 4: The detected plate must belong to a PAID, ACTIVE driver ──
+        const driver = await prisma.driver.findUnique({
+            where: { vehiclePlate: detectedPlate }
+        });
+
+        if (!driver) {
+            console.warn(`AWAS LPR: Rejected — detected plate ${detectedPlate} is not a registered AWAS account`);
+            cleanupFiles(rawTempPath);
+            return res.status(422).json({
+                error: "Video rejected. Plat kenderaan dalam video bukan akaun AWAS yang berdaftar.",
+                reason: "NOT_REGISTERED"
+            });
+        }
+
+        if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
+            console.warn(`AWAS LPR: Rejected — driver ${detectedPlate} subscription inactive/expired`);
+            cleanupFiles(rawTempPath);
+            return res.status(403).json({
+                error: "Langganan tidak aktif. Sila perbaharui langganan anda.",
+                reason: "SUBSCRIPTION_INACTIVE"
+            });
+        }
+
+        // ── STEP 5: The plate seen in the video must match the login plate ──
+        // This stops a paid member filming ANOTHER paid member's car and claiming it.
+        if (detectedPlate !== normalizedClaimedPlate) {
+            console.warn(`AWAS LPR: Rejected — plate mismatch. Video=${detectedPlate} Login=${normalizedClaimedPlate}`);
+            cleanupFiles(rawTempPath);
+            return res.status(422).json({
+                error: "Video rejected. Plat dalam video tidak sepadan dengan plat log masuk anda. Hanya video kenderaan anda sendiri diterima.",
+                reason: "MISMATCH"
+            });
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // GATE PASSED. The video shows a paid, active driver's own plate.
+        // Now — and only now — issue the writ and seal the video.
+        // ════════════════════════════════════════════════════════════════════
+        console.log(`AWAS LPR: GATE PASSED for ${detectedPlate}. Issuing writ and sealing.`);
 
         const validRoadConditions = ['DRY', 'WET', 'FLOODED', 'UNDER_CONSTRUCTION', 'UNKNOWN'];
         const validWeatherConditions = ['CLEAR', 'RAINY', 'FOGGY', 'HAZY', 'NIGHT', 'UNKNOWN'];
         const validInjuryStatuses = ['NONE', 'MINOR', 'SERIOUS'];
 
-        const normalizedPlate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+        const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
+        console.log(`AWAS Video Hash: ${videoHash}`);
 
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: normalizedPlate }
+        // ── Upload raw video to Cloudinary ──
+        const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
+            resource_type: 'video',
+            folder: 'awas/raw',
+            public_id: `raw_${logHashShort}`,
+            overwrite: true
         });
+        const rawVideoUrl = rawUploadResult.secure_url;
+        console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
 
-        if (!driver || driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
-            return res.status(403).json({ error: "Subscription inactive. Renewal required." });
-        }
-
+        // ── Create the AccidentLog (writ is born here, AFTER the gate) ──
         const accidentRecord = await prisma.accidentLog.create({
             data: {
                 logHash,
-                vehiclePlate: normalizedPlate,
+                vehiclePlate: detectedPlate,
                 latitude: parseFloat(latitude),
                 longitude: parseFloat(longitude),
-                videoUrl: videoUrl || 'PENDING_UPLOAD',
+                videoUrl: rawVideoUrl,
+                rawVideoUrl,
+                videoHash,
                 incidentDescription: incidentDescription || null,
                 roadCondition: validRoadConditions.includes(roadCondition) ? roadCondition : 'UNKNOWN',
                 weatherCondition: validWeatherConditions.includes(weatherCondition) ? weatherCondition : 'UNKNOWN',
@@ -179,134 +278,21 @@ exports.submitLog = async (req, res) => {
                 otherVehicleHash: otherVehicleHash || null,
                 isReportPaid: false,
                 emergencyAlertSent: false,
-                videoStatus: 'PENDING'
+                videoStatus: 'PROCESSING',
+                lprStatus: 'MATCHED',
+                lprDetectedPlate: detectedPlate
             }
         });
 
         const year = new Date().getFullYear();
         const writNumber = `AWAS/MY/${year}/${accidentRecord.id.toString().padStart(6, '0')}`;
-
         await prisma.accidentLog.update({
             where: { id: accidentRecord.id },
             data: { writNumber }
         });
 
-        res.status(201).json({
-            message: "Accident evidence sealed and hashed.",
-            hash: accidentRecord.logHash,
-            writNumber
-        });
-
-    } catch (error) {
-        if (error.code === 'P2002') {
-            return res.status(409).json({ error: "Duplicate entry: Evidence already sealed." });
-        }
-        console.error("AWAS Log Ingress Fault:", error);
-        res.status(500).json({ error: "Log storage error." });
-    }
-};
-
-// ─── UPLOAD VIDEO ────────────────────────────────────────────────────────────
-
-exports.uploadVideo = async (req, res) => {
-    console.log('AWAS uploadVideo called');
-    const LPR_CONFIDENCE_THRESHOLD = 0.7;
-    let rawTempPath = null;
-    let sealedTempPath = null;
-    let overlayTextPath = null;
-
-    try {
-        const { logHash } = req.body;
-        console.log(`AWAS uploadVideo logHash: ${logHash}`);
-
-        if (!logHash) {
-            return res.status(400).json({ error: "logHash required." });
-        }
-
-        if (!req.file) {
-            return res.status(400).json({ error: "Video file required." });
-        }
-
-        const accidentLog = await prisma.accidentLog.findUnique({
-            where: { logHash }
-        });
-
-        if (!accidentLog) {
-            return res.status(404).json({ error: "Accident log not found." });
-        }
-
-        // NO early return for VERIFIED — every upload must pass LPR first
-        // Reset status to PROCESSING for fresh LPR check
-        await prisma.accidentLog.update({
-            where: { logHash },
-            data: { videoStatus: 'PROCESSING' }
-        });
-
-        const videoBuffer = req.file.buffer;
-        const logHashShort = logHash.substring(0, 16);
-        const registeredPlate = accidentLog.vehiclePlate.toUpperCase().replace(/\s+/g, '');
-
-        // ── STEP 1: Write video to /tmp ──
-        rawTempPath = path.join('/tmp', `raw_${logHashShort}.mp4`);
-        fs.writeFileSync(rawTempPath, videoBuffer);
-        console.log(`AWAS LPR: Running plate check for registered plate ${registeredPlate}`);
-
-        // ── STEP 2: LPR — nothing goes to Cloudinary until plate confirmed ──
-        const lprResult = await runLpr(rawTempPath, logHashShort);
-        console.log(`AWAS LPR result: ${JSON.stringify(lprResult)}`);
-
-        if (!lprResult || !lprResult.plate || lprResult.confidence < LPR_CONFIDENCE_THRESHOLD) {
-            console.warn(`AWAS LPR: Rejected — plate unreadable for ${logHash}`);
-            cleanupFiles(rawTempPath);
-            await prisma.accidentLog.update({
-                where: { logHash },
-                data: {
-                    videoStatus: 'FAILED',
-                    lprStatus: 'UNREADABLE',
-                    lprDetectedPlate: lprResult?.plate || null
-                }
-            });
-            return res.status(422).json({
-                error: "Video rejected. Plate number could not be read from video. Ensure your vehicle plate is clearly visible."
-            });
-        }
-
-        const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
-        console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence} vs registered ${registeredPlate}`);
-
-        if (detectedPlate !== registeredPlate) {
-            console.warn(`AWAS LPR: Rejected — plate mismatch ${detectedPlate} vs ${registeredPlate}`);
-            cleanupFiles(rawTempPath);
-            await prisma.accidentLog.update({
-                where: { logHash },
-                data: {
-                    videoStatus: 'FAILED',
-                    lprStatus: 'MISMATCH',
-                    lprDetectedPlate: detectedPlate
-                }
-            });
-            return res.status(422).json({
-                error: "Video rejected. Plate number in video does not match your registered vehicle. Only your own vehicle video is accepted."
-            });
-        }
-
-        // ── STEP 3: Plate matched — proceed to seal ──
-        console.log(`AWAS LPR: Plate matched ${detectedPlate}. Proceeding to seal.`);
-
-        const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
-        console.log(`AWAS Video Hash: ${videoHash}`);
-
-        const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
-            resource_type: 'video',
-            folder: 'awas/raw',
-            public_id: `raw_${logHashShort}`,
-            overwrite: true
-        });
-        const rawVideoUrl = rawUploadResult.secure_url;
-        console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
-
+        // ── Burn the forensic overlay into the video and seal it ──
         sealedTempPath = path.join('/tmp', `sealed_${logHashShort}.mp4`);
-        const writNumber = accidentLog.writNumber || 'AWAS/MY/PENDING';
         const timestamp = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
         const overlayText = [
             `AWAS BUKTI TERSEDIA`,
@@ -327,9 +313,9 @@ exports.uploadVideo = async (req, res) => {
             `"${sealedTempPath}"`
         ].join(' ');
 
-        console.log(`AWAS FFmpeg running...`);
+        console.log(`AWAS FFmpeg sealing...`);
         execSync(ffmpegCmd, { timeout: 60000 });
-        console.log(`AWAS FFmpeg complete.`);
+        console.log(`AWAS FFmpeg seal complete.`);
 
         const sealedBuffer = fs.readFileSync(sealedTempPath);
         const sealedUploadResult = await uploadBufferToCloudinary(sealedBuffer, {
@@ -344,38 +330,43 @@ exports.uploadVideo = async (req, res) => {
         await prisma.accidentLog.update({
             where: { logHash },
             data: {
-                videoHash,
-                rawVideoUrl,
-                videoUrl: rawVideoUrl,
                 sealedVideoUrl,
                 videoStatus: 'VERIFIED',
-                videoSealedAt: new Date(),
-                lprStatus: 'MATCHED',
-                lprDetectedPlate: detectedPlate
+                videoSealedAt: new Date()
             }
         });
 
         cleanupFiles(rawTempPath, sealedTempPath, overlayTextPath);
-        console.log(`AWAS Video sealed successfully for ${logHash}`);
+        console.log(`AWAS Writ issued and video sealed for ${detectedPlate}: ${writNumber}`);
 
-        res.status(200).json({
-            message: "Video sealed and verified.",
+        // Success — return everything the FE needs to render the writ
+        return res.status(201).json({
+            message: "Plate verified. Writ issued and video sealed.",
+            writNumber,
+            hash: logHash,
             videoHash,
-            sealedVideoUrl
+            sealedVideoUrl,
+            verifiedPlate: detectedPlate,
+            vehicleMakeModel: driver.vehicleMakeModel,
+            vehicleType: driver.vehicleType
         });
 
     } catch (error) {
         cleanupFiles(rawTempPath, sealedTempPath, overlayTextPath);
+        // If we created a record but sealing failed mid-way, mark it FAILED
         try {
-            if (req.body.logHash) {
-                await prisma.accidentLog.update({
+            if (req.body && req.body.logHash) {
+                await prisma.accidentLog.updateMany({
                     where: { logHash: req.body.logHash },
                     data: { videoStatus: 'FAILED' }
                 });
             }
         } catch (e) {}
-        console.error("AWAS Video Upload Fault:", error);
-        res.status(500).json({ error: "Video sealing failed." });
+        if (error.code === 'P2002') {
+            return res.status(409).json({ error: "Evidence already sealed." });
+        }
+        console.error("AWAS verifyAndSeal Fault:", error);
+        return res.status(500).json({ error: "Pengesahan video gagal. Cuba lagi." });
     }
 };
 

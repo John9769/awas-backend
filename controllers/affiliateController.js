@@ -193,7 +193,7 @@ exports.requestPayout = async (req, res) => {
         }
 
         // Create payout request
-        const payout = await prisma.affillatePayout.create({
+        const payout = await prisma.affiliatePayout.create({
             data: {
                 affiliateId: affiliate.id,
                 amount: pending,
