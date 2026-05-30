@@ -44,7 +44,6 @@ const cleanupFiles = (...filePaths) => {
 };
 
 // Extract a single JPEG frame from video at given second mark using FFmpeg
-// Returns the frame file path, or null if extraction failed
 const extractFrame = (videoPath, second, outputPath) => {
     try {
         execSync(
@@ -53,17 +52,17 @@ const extractFrame = (videoPath, second, outputPath) => {
         );
         return fs.existsSync(outputPath) ? outputPath : null;
     } catch (e) {
+        console.warn(`AWAS FFmpeg frame extract failed at ${second}s: ${e.message}`);
         return null;
     }
 };
 
 // Send a frame JPEG to Plate Recognizer API
-// Returns { plate: string, confidence: number } or null if API call failed
 const callPlateRecognizer = async (framePath) => {
     try {
         const form = new FormData();
         form.append('upload', fs.createReadStream(framePath));
-        form.append('regions', 'my'); // Malaysia region hint
+        form.append('regions', 'my');
 
         const response = await axios.post(
             'https://api.platerecognizer.com/v1/plate-reader/',
@@ -80,7 +79,6 @@ const callPlateRecognizer = async (framePath) => {
         const results = response.data?.results;
         if (!results || results.length === 0) return null;
 
-        // Pick result with highest plate confidence
         const best = results.reduce((a, b) => {
             return (a.plate?.confidence || 0) >= (b.plate?.confidence || 0) ? a : b;
         });
@@ -95,9 +93,8 @@ const callPlateRecognizer = async (framePath) => {
     }
 };
 
-// Run LPR against video — tries frames at 1s, 2s, 3s, takes best confidence result
-// Returns { plate, confidence } or null if all frames failed
-const runLpr = (videoPath, logHashShort) => {
+// Run LPR — extract frames at 1s, 2s, 3s, take best confidence result
+const runLpr = async (videoPath, logHashShort) => {
     const framePaths = [1, 2, 3].map(s =>
         path.join('/tmp', `frame_${logHashShort}_${s}s.jpg`)
     );
@@ -108,23 +105,25 @@ const runLpr = (videoPath, logHashShort) => {
         if (fp) extractedFrames.push(fp);
     }
 
+    console.log(`AWAS LPR: Extracted ${extractedFrames.length} frames`);
+
     if (extractedFrames.length === 0) {
         cleanupFiles(...framePaths);
-        return Promise.resolve(null);
+        return null;
     }
 
-    // Call LPR on all extracted frames in parallel, take best result
-    return Promise.all(extractedFrames.map(fp => callPlateRecognizer(fp)))
-        .then(results => {
-            cleanupFiles(...framePaths);
-            const valid = results.filter(r => r && r.plate);
-            if (valid.length === 0) return null;
-            return valid.reduce((a, b) => a.confidence >= b.confidence ? a : b);
-        })
-        .catch(() => {
-            cleanupFiles(...framePaths);
-            return null;
-        });
+    try {
+        const results = await Promise.all(extractedFrames.map(fp => callPlateRecognizer(fp)));
+        cleanupFiles(...framePaths);
+        const valid = results.filter(r => r && r.plate);
+        console.log(`AWAS LPR: Valid plate results: ${valid.length}`);
+        if (valid.length === 0) return null;
+        return valid.reduce((a, b) => a.confidence >= b.confidence ? a : b);
+    } catch (e) {
+        cleanupFiles(...framePaths);
+        console.warn(`AWAS LPR runLpr error: ${e.message}`);
+        return null;
+    }
 };
 
 // ─── SUBMIT LOG ─────────────────────────────────────────────────────────────
@@ -208,16 +207,9 @@ exports.submitLog = async (req, res) => {
 };
 
 // ─── UPLOAD VIDEO ────────────────────────────────────────────────────────────
-//
-// LPR-first pipeline:
-//   1. Write video to /tmp
-//   2. Extract frames at 1s/2s/3s — send to Plate Recognizer API
-//   3. If unreadable (no plate / confidence < 0.7) → hard reject, videoStatus FAILED
-//   4. If mismatch (detected plate ≠ registered plate) → hard reject, videoStatus FAILED
-//   5. If matched → proceed: SHA-256 → upload raw to Cloudinary → FFmpeg seal → upload sealed
-//   6. Nothing touches Cloudinary until plate is confirmed matched
 
 exports.uploadVideo = async (req, res) => {
+    console.log('AWAS uploadVideo called');
     const LPR_CONFIDENCE_THRESHOLD = 0.7;
     let rawTempPath = null;
     let sealedTempPath = null;
@@ -225,6 +217,7 @@ exports.uploadVideo = async (req, res) => {
 
     try {
         const { logHash } = req.body;
+        console.log(`AWAS uploadVideo logHash: ${logHash}`);
 
         if (!logHash) {
             return res.status(400).json({ error: "logHash required." });
@@ -242,13 +235,8 @@ exports.uploadVideo = async (req, res) => {
             return res.status(404).json({ error: "Accident log not found." });
         }
 
-        if (accidentLog.videoStatus === 'VERIFIED') {
-            return res.status(200).json({
-                message: "Video already sealed.",
-                sealedVideoUrl: accidentLog.sealedVideoUrl
-            });
-        }
-
+        // NO early return for VERIFIED — every upload must pass LPR first
+        // Reset status to PROCESSING for fresh LPR check
         await prisma.accidentLog.update({
             where: { logHash },
             data: { videoStatus: 'PROCESSING' }
@@ -258,17 +246,17 @@ exports.uploadVideo = async (req, res) => {
         const logHashShort = logHash.substring(0, 16);
         const registeredPlate = accidentLog.vehiclePlate.toUpperCase().replace(/\s+/g, '');
 
-        // ── STEP 1: Write video to /tmp for FFmpeg frame extraction ──
+        // ── STEP 1: Write video to /tmp ──
         rawTempPath = path.join('/tmp', `raw_${logHashShort}.mp4`);
         fs.writeFileSync(rawTempPath, videoBuffer);
+        console.log(`AWAS LPR: Running plate check for registered plate ${registeredPlate}`);
 
-        // ── STEP 2: LPR check — MUST pass before anything goes to Cloudinary ──
-        console.log(`AWAS LPR: Running plate check for ${registeredPlate}`);
+        // ── STEP 2: LPR — nothing goes to Cloudinary until plate confirmed ──
         const lprResult = await runLpr(rawTempPath, logHashShort);
+        console.log(`AWAS LPR result: ${JSON.stringify(lprResult)}`);
 
         if (!lprResult || !lprResult.plate || lprResult.confidence < LPR_CONFIDENCE_THRESHOLD) {
-            // Plate unreadable — hard reject
-            console.warn(`AWAS LPR: Plate unreadable or low confidence for ${logHash}`);
+            console.warn(`AWAS LPR: Rejected — plate unreadable for ${logHash}`);
             cleanupFiles(rawTempPath);
             await prisma.accidentLog.update({
                 where: { logHash },
@@ -284,11 +272,10 @@ exports.uploadVideo = async (req, res) => {
         }
 
         const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
-        console.log(`AWAS LPR: Detected ${detectedPlate} (confidence ${lprResult.confidence}) vs registered ${registeredPlate}`);
+        console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence} vs registered ${registeredPlate}`);
 
         if (detectedPlate !== registeredPlate) {
-            // Plate mismatch — hard reject
-            console.warn(`AWAS LPR: Plate mismatch. Detected: ${detectedPlate}, Registered: ${registeredPlate}`);
+            console.warn(`AWAS LPR: Rejected — plate mismatch ${detectedPlate} vs ${registeredPlate}`);
             cleanupFiles(rawTempPath);
             await prisma.accidentLog.update({
                 where: { logHash },
@@ -303,14 +290,12 @@ exports.uploadVideo = async (req, res) => {
             });
         }
 
-        // ── STEP 3: Plate matched — proceed with sealing ──
-        console.log(`AWAS LPR: Plate matched. Proceeding to seal.`);
+        // ── STEP 3: Plate matched — proceed to seal ──
+        console.log(`AWAS LPR: Plate matched ${detectedPlate}. Proceeding to seal.`);
 
-        // SHA-256 from raw buffer
         const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
         console.log(`AWAS Video Hash: ${videoHash}`);
 
-        // Upload raw video to Cloudinary
         const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
             resource_type: 'video',
             folder: 'awas/raw',
@@ -320,7 +305,6 @@ exports.uploadVideo = async (req, res) => {
         const rawVideoUrl = rawUploadResult.secure_url;
         console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
 
-        // FFmpeg seal — burn overlay
         sealedTempPath = path.join('/tmp', `sealed_${logHashShort}.mp4`);
         const writNumber = accidentLog.writNumber || 'AWAS/MY/PENDING';
         const timestamp = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
@@ -347,7 +331,6 @@ exports.uploadVideo = async (req, res) => {
         execSync(ffmpegCmd, { timeout: 60000 });
         console.log(`AWAS FFmpeg complete.`);
 
-        // Upload sealed video to Cloudinary
         const sealedBuffer = fs.readFileSync(sealedTempPath);
         const sealedUploadResult = await uploadBufferToCloudinary(sealedBuffer, {
             resource_type: 'video',
@@ -358,7 +341,6 @@ exports.uploadVideo = async (req, res) => {
         const sealedVideoUrl = sealedUploadResult.secure_url;
         console.log(`AWAS Sealed Video URL: ${sealedVideoUrl}`);
 
-        // Update DB — verified
         await prisma.accidentLog.update({
             where: { logHash },
             data: {
