@@ -79,6 +79,13 @@ enum VideoStatus {
   FAILED
 }
 
+enum LprStatus {
+  MATCHED
+  MISMATCH
+  UNREADABLE
+  SKIPPED
+}
+
 model Driver {
   id               Int           @id @default(autoincrement())
   vehiclePlate     String        @unique @map("vehicle_plate")
@@ -122,6 +129,8 @@ model AccidentLog {
   sealedVideoUrl        String?               @map("sealed_video_url")
   videoStatus           VideoStatus           @default(PENDING) @map("video_status")
   videoSealedAt         DateTime?             @map("video_sealed_at")
+  lprStatus             LprStatus?            @map("lpr_status")
+  lprDetectedPlate      String?               @map("lpr_detected_plate")
   createdAt             DateTime              @default(now()) @map("created_at")
   verificationRequests  VerificationRequest[]
 
