@@ -99,6 +99,7 @@ const callPlateRecognizer = async (framePath) => {
             }
         );
 
+        console.log('AWAS LPR RAW RESPONSE:', JSON.stringify(response.data));
         const results = response.data?.results;
         if (!results || results.length === 0) return null;
 
