@@ -19,6 +19,24 @@ cloudinary.config({
 });
 
 const LPR_CONFIDENCE_THRESHOLD = 0.7;
+const LPR_MAX_PLATE_DISTANCE = 2; // allow up to 2 character differences (font misreads on MY plates)
+
+// Levenshtein distance — how many single-character edits separate two strings
+function plateDistance(a, b) {
+    a = (a || '').toUpperCase();
+    b = (b || '').toUpperCase();
+    const m = a.length, n = b.length;
+    const d = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) d[i][0] = i;
+    for (let j = 0; j <= n; j++) d[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+        }
+    }
+    return d[m][n];
+}
 
 // Small delay helper for spacing out rate-limited API calls
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -237,36 +255,41 @@ exports.verifyAndSeal = async (req, res) => {
         const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
         console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence}`);
 
-        // STEP 4: The detected plate must belong to a PAID, ACTIVE driver
+        // STEP 4: The plate in the video must be a fuzzy match to the LOGIN plate.
+        // LPR misreads MY plate fonts (1->I, 5->S, 4->A, 0->O/D), so we allow up to
+        // LPR_MAX_PLATE_DISTANCE character differences instead of an exact match.
+        const distance = plateDistance(detectedPlate, normalizedClaimedPlate);
+        console.log(`AWAS LPR: Distance ${distance} between video=${detectedPlate} and login=${normalizedClaimedPlate}`);
+
+        if (distance > LPR_MAX_PLATE_DISTANCE) {
+            console.warn(`AWAS LPR: Rejected — plate mismatch (distance ${distance}). Video=${detectedPlate} Login=${normalizedClaimedPlate}`);
+            cleanupFiles(rawTempPath);
+            return res.status(422).json({
+                error: "Video rejected. Plat dalam video tidak sepadan dengan plat log masuk anda. Hanya video kenderaan anda sendiri diterima.",
+                reason: "MISMATCH"
+            });
+        }
+
+        // The login plate is the source of truth — load THAT driver (must be paid + active)
         const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: detectedPlate }
+            where: { vehiclePlate: normalizedClaimedPlate }
         });
 
         if (!driver) {
-            console.warn(`AWAS LPR: Rejected — detected plate ${detectedPlate} is not a registered AWAS account`);
+            console.warn(`AWAS LPR: Rejected — login plate ${normalizedClaimedPlate} is not a registered AWAS account`);
             cleanupFiles(rawTempPath);
             return res.status(422).json({
-                error: "Video rejected. Plat kenderaan dalam video bukan akaun AWAS yang berdaftar.",
+                error: "Video rejected. Akaun AWAS tidak dijumpai untuk plat log masuk anda.",
                 reason: "NOT_REGISTERED"
             });
         }
 
         if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
-            console.warn(`AWAS LPR: Rejected — driver ${detectedPlate} subscription inactive/expired`);
+            console.warn(`AWAS LPR: Rejected — driver ${normalizedClaimedPlate} subscription inactive/expired`);
             cleanupFiles(rawTempPath);
             return res.status(403).json({
                 error: "Langganan tidak aktif. Sila perbaharui langganan anda.",
                 reason: "SUBSCRIPTION_INACTIVE"
-            });
-        }
-
-        // STEP 5: The plate seen in the video must match the login plate
-        if (detectedPlate !== normalizedClaimedPlate) {
-            console.warn(`AWAS LPR: Rejected — plate mismatch. Video=${detectedPlate} Login=${normalizedClaimedPlate}`);
-            cleanupFiles(rawTempPath);
-            return res.status(422).json({
-                error: "Video rejected. Plat dalam video tidak sepadan dengan plat log masuk anda. Hanya video kenderaan anda sendiri diterima.",
-                reason: "MISMATCH"
             });
         }
 
