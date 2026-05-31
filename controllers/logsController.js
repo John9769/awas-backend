@@ -103,13 +103,14 @@ const callPlateRecognizer = async (framePath) => {
         const results = response.data?.results;
         if (!results || results.length === 0) return null;
 
+        // Snapshot Cloud shape: each result has `plate` (string) and `score` (0-1 confidence)
         const best = results.reduce((a, b) => {
-            return (a.plate?.confidence || 0) >= (b.plate?.confidence || 0) ? a : b;
+            return (a.score || 0) >= (b.score || 0) ? a : b;
         });
 
         return {
-            plate: best.plate?.chars?.toUpperCase().replace(/\s+/g, '') || null,
-            confidence: best.plate?.confidence || 0
+            plate: (best.plate || '').toUpperCase().replace(/\s+/g, '') || null,
+            confidence: best.score || 0
         };
     } catch (e) {
         // Surface the HTTP status so 429 (rate limit) is distinguishable from a genuine no-read
