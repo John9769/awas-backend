@@ -20,6 +20,9 @@ cloudinary.config({
 
 const LPR_CONFIDENCE_THRESHOLD = 0.7;
 
+// Small delay helper for spacing out rate-limited API calls
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 const uploadBufferToCloudinary = (buffer, options) => {
@@ -90,12 +93,18 @@ const callPlateRecognizer = async (framePath) => {
             confidence: best.plate?.confidence || 0
         };
     } catch (e) {
-        console.warn(`AWAS LPR API call failed: ${e.message}`);
-        return null;
+        // Surface the HTTP status so 429 (rate limit) is distinguishable from a genuine no-read
+        const status = e.response?.status;
+        console.warn(`AWAS LPR API call failed${status ? ` (status ${status})` : ''}: ${e.message}`);
+        return { error: true, status: status || null };
     }
 };
 
-// Run LPR — extract frames at 1s, 2s, 3s, take best confidence result
+// Run LPR — extract frames at 1s, 2s, 3s, then call the API ONE AT A TIME.
+// The free tier rate-limits bursts, so firing all 3 at once causes 429s.
+// We call sequentially, stop as soon as we get a good read, and back off
+// briefly on a 429 before trying the next frame. This usually uses 1 call,
+// not 3 — saving quota and respecting the rate limit.
 const runLpr = async (videoPath, logHashShort) => {
     const framePaths = [1, 2, 3].map(s =>
         path.join('/tmp', `frame_${logHashShort}_${s}s.jpg`)
@@ -114,34 +123,53 @@ const runLpr = async (videoPath, logHashShort) => {
         return null;
     }
 
-    try {
-        const results = await Promise.all(extractedFrames.map(fp => callPlateRecognizer(fp)));
-        cleanupFiles(...framePaths);
-        const valid = results.filter(r => r && r.plate);
-        console.log(`AWAS LPR: Valid plate results: ${valid.length}`);
-        if (valid.length === 0) return null;
-        return valid.reduce((a, b) => a.confidence >= b.confidence ? a : b);
-    } catch (e) {
-        cleanupFiles(...framePaths);
-        console.warn(`AWAS LPR runLpr error: ${e.message}`);
-        return null;
+    let best = null;
+    let sawRateLimit = false;
+
+    for (let i = 0; i < extractedFrames.length; i++) {
+        const result = await callPlateRecognizer(extractedFrames[i]);
+
+        // Rate limited — wait and retry the SAME frame once, then move on
+        if (result && result.error) {
+            if (result.status === 429) {
+                sawRateLimit = true;
+                console.warn(`AWAS LPR: Rate limited (429) on frame ${i + 1}, backing off 1.5s`);
+                await sleep(1500);
+                const retry = await callPlateRecognizer(extractedFrames[i]);
+                if (retry && !retry.error && retry.plate) {
+                    if (!best || retry.confidence > best.confidence) best = retry;
+                    if (best && best.confidence >= LPR_CONFIDENCE_THRESHOLD) break;
+                }
+            }
+            // space out the next call regardless
+            await sleep(800);
+            continue;
+        }
+
+        if (result && result.plate) {
+            if (!best || result.confidence > best.confidence) best = result;
+            // Good enough — stop early, save the remaining API calls
+            if (best.confidence >= LPR_CONFIDENCE_THRESHOLD) break;
+        }
+
+        // Space out calls to stay under the per-second free-tier limit
+        if (i < extractedFrames.length - 1) await sleep(800);
     }
+
+    cleanupFiles(...framePaths);
+
+    if (best && best.plate) {
+        console.log(`AWAS LPR: Best read ${best.plate} @ ${best.confidence}`);
+    } else {
+        console.log(`AWAS LPR: No plate read${sawRateLimit ? ' (rate limited)' : ''}`);
+    }
+
+    // Signal rate-limit-only failure separately from genuine no-read
+    if (!best && sawRateLimit) return { rateLimited: true };
+    return best;
 };
 
 // ─── VERIFY & SEAL (THE LPR GATE — single endpoint) ──────────────────────────
-//
-// This is the ONE endpoint that enforces the gate. Flow:
-//   1. Receive video + claimed plate + GPS + incident metadata
-//   2. Run LPR on the video to read the ACTUAL plate from the footage
-//   3. Reject if no plate readable, or confidence too low
-//   4. Look up the detected plate in the drivers table (paid accounts only)
-//   5. Reject if no paid/active driver matches the plate seen in the video
-//   6. Reject if the detected plate does not match the plate the user logged in with
-//   7. ONLY on full pass: create the AccidentLog, issue the writ, seal the video
-//
-// No writ is ever issued unless steps 1-6 all pass. Nothing is written to the
-// database on rejection. The video itself is the source of truth.
-
 exports.verifyAndSeal = async (req, res) => {
     console.log('AWAS verifyAndSeal called');
     let rawTempPath = null;
@@ -155,7 +183,6 @@ exports.verifyAndSeal = async (req, res) => {
             otherVehiclePlate, otherVehicleMakeModel, otherVehicleVideoUrl, otherVehicleHash
         } = req.body;
 
-        // ── Basic input validation ──
         if (!logHash || !claimedPlate || !latitude || !longitude) {
             return res.status(400).json({ error: "Incomplete accident data." });
         }
@@ -169,7 +196,6 @@ exports.verifyAndSeal = async (req, res) => {
             return res.status(400).json({ error: "Video file required." });
         }
 
-        // Guard against duplicate submission of the same sealed evidence
         const existing = await prisma.accidentLog.findUnique({ where: { logHash } });
         if (existing) {
             return res.status(409).json({ error: "Evidence already sealed." });
@@ -179,16 +205,26 @@ exports.verifyAndSeal = async (req, res) => {
         const videoBuffer = req.file.buffer;
         const logHashShort = logHash.substring(0, 16);
 
-        // ── STEP 1: Write video to /tmp for FFmpeg ──
+        // STEP 1: Write video to /tmp for FFmpeg
         rawTempPath = path.join('/tmp', `raw_${logHashShort}.mp4`);
         fs.writeFileSync(rawTempPath, videoBuffer);
         console.log(`AWAS LPR: Running plate check. Claimed plate: ${normalizedClaimedPlate}`);
 
-        // ── STEP 2: LPR — read the plate physically present in the video ──
+        // STEP 2: LPR — read the plate physically present in the video
         const lprResult = await runLpr(rawTempPath, logHashShort);
         console.log(`AWAS LPR result: ${JSON.stringify(lprResult)}`);
 
-        // ── STEP 3: Reject if unreadable / low confidence ──
+        // STEP 2a: Distinguish a rate-limit failure from a genuine unreadable plate
+        if (lprResult && lprResult.rateLimited) {
+            console.warn(`AWAS LPR: Rejected — API rate limited for ${logHash}`);
+            cleanupFiles(rawTempPath);
+            return res.status(503).json({
+                error: "Perkhidmatan pengesahan plat sibuk sebentar. Sila cuba lagi dalam beberapa saat.",
+                reason: "RATE_LIMITED"
+            });
+        }
+
+        // STEP 3: Reject if unreadable / low confidence
         if (!lprResult || !lprResult.plate || lprResult.confidence < LPR_CONFIDENCE_THRESHOLD) {
             console.warn(`AWAS LPR: Rejected — plate unreadable for ${logHash}`);
             cleanupFiles(rawTempPath);
@@ -201,7 +237,7 @@ exports.verifyAndSeal = async (req, res) => {
         const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
         console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence}`);
 
-        // ── STEP 4: The detected plate must belong to a PAID, ACTIVE driver ──
+        // STEP 4: The detected plate must belong to a PAID, ACTIVE driver
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: detectedPlate }
         });
@@ -224,8 +260,7 @@ exports.verifyAndSeal = async (req, res) => {
             });
         }
 
-        // ── STEP 5: The plate seen in the video must match the login plate ──
-        // This stops a paid member filming ANOTHER paid member's car and claiming it.
+        // STEP 5: The plate seen in the video must match the login plate
         if (detectedPlate !== normalizedClaimedPlate) {
             console.warn(`AWAS LPR: Rejected — plate mismatch. Video=${detectedPlate} Login=${normalizedClaimedPlate}`);
             cleanupFiles(rawTempPath);
@@ -235,10 +270,7 @@ exports.verifyAndSeal = async (req, res) => {
             });
         }
 
-        // ════════════════════════════════════════════════════════════════════
-        // GATE PASSED. The video shows a paid, active driver's own plate.
-        // Now — and only now — issue the writ and seal the video.
-        // ════════════════════════════════════════════════════════════════════
+        // GATE PASSED
         console.log(`AWAS LPR: GATE PASSED for ${detectedPlate}. Issuing writ and sealing.`);
 
         const validRoadConditions = ['DRY', 'WET', 'FLOODED', 'UNDER_CONSTRUCTION', 'UNKNOWN'];
@@ -248,7 +280,6 @@ exports.verifyAndSeal = async (req, res) => {
         const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
         console.log(`AWAS Video Hash: ${videoHash}`);
 
-        // ── Upload raw video to Cloudinary ──
         const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
             resource_type: 'video',
             folder: 'awas/raw',
@@ -258,7 +289,6 @@ exports.verifyAndSeal = async (req, res) => {
         const rawVideoUrl = rawUploadResult.secure_url;
         console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
 
-        // ── Create the AccidentLog (writ is born here, AFTER the gate) ──
         const accidentRecord = await prisma.accidentLog.create({
             data: {
                 logHash,
@@ -291,7 +321,6 @@ exports.verifyAndSeal = async (req, res) => {
             data: { writNumber }
         });
 
-        // ── Burn the forensic overlay into the video and seal it ──
         sealedTempPath = path.join('/tmp', `sealed_${logHashShort}.mp4`);
         const timestamp = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
         const overlayText = [
@@ -339,7 +368,6 @@ exports.verifyAndSeal = async (req, res) => {
         cleanupFiles(rawTempPath, sealedTempPath, overlayTextPath);
         console.log(`AWAS Writ issued and video sealed for ${detectedPlate}: ${writNumber}`);
 
-        // Success — return everything the FE needs to render the writ
         return res.status(201).json({
             message: "Plate verified. Writ issued and video sealed.",
             writNumber,
@@ -353,7 +381,6 @@ exports.verifyAndSeal = async (req, res) => {
 
     } catch (error) {
         cleanupFiles(rawTempPath, sealedTempPath, overlayTextPath);
-        // If we created a record but sealing failed mid-way, mark it FAILED
         try {
             if (req.body && req.body.logHash) {
                 await prisma.accidentLog.updateMany({
@@ -371,7 +398,6 @@ exports.verifyAndSeal = async (req, res) => {
 };
 
 // ─── CLEAR PAYWALL ───────────────────────────────────────────────────────────
-
 exports.clearPaywall = async (req, res) => {
     try {
         const { logHash } = req.body;
