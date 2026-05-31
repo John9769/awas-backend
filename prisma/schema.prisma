@@ -93,6 +93,7 @@ model Driver {
   vehicleType      VehicleType   @default(CAR) @map("vehicle_type")
   mykadLastFour    String        @map("mykad_last_four")
   phone            String?       @map("phone")
+  passwordHash     String?       @map("password_hash")
   subStatus        SubStatus     @default(ACTIVE) @map("sub_status")
   subExpiresAt     DateTime      @map("sub_expires_at")
   referralCode     String        @unique @map("referral_code")

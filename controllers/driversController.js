@@ -2,6 +2,8 @@
 // FILE: controllers/driversController.js
 // ==========================================
 const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const prisma = new PrismaClient();
 
 // Generate unique 8-char referral code
@@ -14,10 +16,10 @@ function generateReferralCode() {
     return code;
 }
 
-// REGISTER DRIVER
+// REGISTER DRIVER (now requires a password)
 exports.registerDriver = async (req, res) => {
     try {
-        const { vehiclePlate, vehicleMakeModel, vehicleType, mykadLastFour, phone, consentGiven, referredByCode } = req.body;
+        const { vehiclePlate, vehicleMakeModel, vehicleType, mykadLastFour, phone, password, consentGiven, referredByCode } = req.body;
 
         if (!consentGiven) {
             return res.status(400).json({ error: "PDPA Consent Mandatory." });
@@ -28,6 +30,9 @@ exports.registerDriver = async (req, res) => {
         if (!/^\d{4}$/.test(mykadLastFour)) {
             return res.status(400).json({ error: "Invalid MyKad input. Last 4 digits only." });
         }
+        if (!password || password.length < 6) {
+            return res.status(400).json({ error: "Kata laluan diperlukan (minimum 6 aksara)." });
+        }
         if (vehicleType && !['CAR', 'MOTORCYCLE', 'LORRY', 'BUS', 'VAN'].includes(vehicleType)) {
             return res.status(400).json({ error: "Invalid vehicle type." });
         }
@@ -35,6 +40,8 @@ exports.registerDriver = async (req, res) => {
         const normalizedPlate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
         const expiryDate = new Date();
         expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+
+        const passwordHash = await bcrypt.hash(password, 12);
 
         // Validate referral code if provided
         let validReferralCode = null;
@@ -65,6 +72,7 @@ exports.registerDriver = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone: phone || null,
+                passwordHash,
                 subStatus: 'ACTIVE',
                 subExpiresAt: expiryDate
             },
@@ -74,6 +82,7 @@ exports.registerDriver = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone: phone || null,
+                passwordHash,
                 subStatus: 'ACTIVE',
                 subExpiresAt: expiryDate,
                 referralCode: newReferralCode,
@@ -91,6 +100,102 @@ exports.registerDriver = async (req, res) => {
     } catch (error) {
         console.error("AWAS Driver Registration Fault:", error);
         res.status(500).json({ error: "Internal registry error." });
+    }
+};
+
+// LOGIN DRIVER (plate + password)
+exports.loginDriver = async (req, res) => {
+    try {
+        const { vehiclePlate, password } = req.body;
+
+        if (!vehiclePlate || !password) {
+            return res.status(400).json({ error: "Nombor plat dan kata laluan diperlukan." });
+        }
+
+        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+
+        const driver = await prisma.driver.findUnique({
+            where: { vehiclePlate: plate }
+        });
+
+        if (!driver) {
+            return res.status(401).json({ error: "Nombor plat atau kata laluan salah." });
+        }
+
+        // Account predates passwords (legacy) — force a reset
+        if (!driver.passwordHash) {
+            return res.status(409).json({ error: "Akaun ini belum mempunyai kata laluan. Sila tetapkan melalui 'Lupa Kata Laluan'.", reason: "NO_PASSWORD" });
+        }
+
+        const passwordMatch = await bcrypt.compare(password, driver.passwordHash);
+        if (!passwordMatch) {
+            return res.status(401).json({ error: "Nombor plat atau kata laluan salah." });
+        }
+
+        if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
+            return res.status(403).json({ error: "Langganan AWAS anda telah tamat. Sila perbaharui." });
+        }
+
+        const token = jwt.sign(
+            { plate: driver.vehiclePlate, id: driver.id },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        return res.status(200).json({
+            message: "Log masuk berjaya.",
+            token,
+            vehiclePlate: driver.vehiclePlate,
+            vehicleMakeModel: driver.vehicleMakeModel,
+            vehicleType: driver.vehicleType,
+            mykadLastFour: driver.mykadLastFour,
+            referralCode: driver.referralCode
+        });
+
+    } catch (err) {
+        console.error('AWAS Driver Login Fault:', err);
+        return res.status(500).json({ error: 'Server error.' });
+    }
+};
+
+// RESET PASSWORD (plate + MyKad last-4 — no WhatsApp dependency)
+exports.resetPassword = async (req, res) => {
+    try {
+        const { vehiclePlate, mykadLastFour, newPassword } = req.body;
+
+        if (!vehiclePlate || !mykadLastFour || !newPassword) {
+            return res.status(400).json({ error: "Semua medan diperlukan." });
+        }
+        if (!/^\d{4}$/.test(mykadLastFour)) {
+            return res.status(400).json({ error: "MyKad 4 digit terakhir tidak sah." });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: "Kata laluan baru minimum 6 aksara." });
+        }
+
+        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+
+        const driver = await prisma.driver.findUnique({
+            where: { vehiclePlate: plate }
+        });
+
+        // Generic message — do not reveal whether the plate exists
+        if (!driver || driver.mykadLastFour !== mykadLastFour) {
+            return res.status(401).json({ error: "Nombor plat atau MyKad tidak sepadan." });
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+
+        await prisma.driver.update({
+            where: { vehiclePlate: plate },
+            data: { passwordHash }
+        });
+
+        return res.status(200).json({ message: "Kata laluan berjaya ditetapkan semula. Sila log masuk." });
+
+    } catch (err) {
+        console.error('AWAS Reset Password Fault:', err);
+        return res.status(500).json({ error: 'Server error.' });
     }
 };
 
