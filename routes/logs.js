@@ -6,19 +6,20 @@ const router = express.Router();
 const multer = require('multer');
 const logsController = require('../controllers/logsController');
 
-// Multer — memory storage, 200MB limit for video files
+// Multer — memory storage
+// video: 1 file, max 200MB
+// images: up to 4 files, max 10MB each
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 200 * 1024 * 1024 }
 });
 
-// SINGLE LPR-GATED ENDPOINT:
-// Receives the video + claimed plate + incident metadata.
-// Runs LPR, verifies against a paid driver account, and ONLY on full pass
-// issues the writ and seals the video. No writ is created on rejection.
-router.post('/verify-seal', upload.single('video'), logsController.verifyAndSeal);
+const evidenceUpload = upload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'images', maxCount: 4 }
+]);
 
-// Paywall unlock (unchanged)
+router.post('/verify-seal', evidenceUpload, logsController.verifyAndSeal);
 router.post('/paywall-clear', logsController.clearPaywall);
 
 module.exports = router;

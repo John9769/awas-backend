@@ -132,6 +132,8 @@ model AccidentLog {
   videoSealedAt         DateTime?             @map("video_sealed_at")
   lprStatus             LprStatus?            @map("lpr_status")
   lprDetectedPlate      String?               @map("lpr_detected_plate")
+  imageUrls             Json?                 @map("image_urls")
+  imageHashes           Json?                 @map("image_hashes")
   createdAt             DateTime              @default(now()) @map("created_at")
   verificationRequests  VerificationRequest[]
 

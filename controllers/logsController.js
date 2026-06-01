@@ -4,39 +4,13 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
 const cloudinary = require('cloudinary').v2;
-const axios = require('axios');
-const FormData = require('form-data');
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
-
-const LPR_CONFIDENCE_THRESHOLD = 0.7;
-const LPR_MAX_PLATE_DISTANCE = 2;
-
-function plateDistance(a, b) {
-    a = (a || '').toUpperCase();
-    b = (b || '').toUpperCase();
-    const m = a.length, n = b.length;
-    const d = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-    for (let i = 0; i <= m; i++) d[i][0] = i;
-    for (let j = 0; j <= n; j++) d[0][j] = j;
-    for (let i = 1; i <= m; i++) {
-        for (let j = 1; j <= n; j++) {
-            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-            d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
-        }
-    }
-    return d[m][n];
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -53,133 +27,22 @@ const uploadBufferToCloudinary = (buffer, options) => {
     });
 };
 
-const cleanupFiles = (...filePaths) => {
-    for (const fp of filePaths) {
-        try {
-            if (fp && fs.existsSync(fp)) fs.unlinkSync(fp);
-        } catch (e) {
-            console.warn(`AWAS Cleanup warning: could not delete ${fp}`);
-        }
-    }
-};
-
-const extractFrame = (videoPath, second, outputPath) => {
-    try {
-        execSync(
-            `ffmpeg -y -ss ${second} -i "${videoPath}" -frames:v 1 -q:v 2 "${outputPath}" 2>/dev/null`,
-            { timeout: 15000 }
-        );
-        return fs.existsSync(outputPath) ? outputPath : null;
-    } catch (e) {
-        console.warn(`AWAS FFmpeg frame extract failed at ${second}s: ${e.message}`);
-        return null;
-    }
-};
-
-const callPlateRecognizer = async (framePath) => {
-    try {
-        const form = new FormData();
-        form.append('upload', fs.createReadStream(framePath));
-        form.append('regions', 'my');
-
-        const response = await axios.post(
-            'https://api.platerecognizer.com/v1/plate-reader/',
-            form,
-            {
-                headers: {
-                    ...form.getHeaders(),
-                    'Authorization': `Token ${process.env.PLATE_RECOGNIZER_API_KEY}`
-                },
-                timeout: 15000
-            }
-        );
-
-        console.log('AWAS LPR RAW RESPONSE:', JSON.stringify(response.data));
-        const results = response.data?.results;
-        if (!results || results.length === 0) return null;
-
-        const best = results.reduce((a, b) => {
-            return (a.score || 0) >= (b.score || 0) ? a : b;
-        });
-
-        return {
-            plate: (best.plate || '').toUpperCase().replace(/\s+/g, '') || null,
-            confidence: best.score || 0
-        };
-    } catch (e) {
-        const status = e.response?.status;
-        console.warn(`AWAS LPR API call failed${status ? ` (status ${status})` : ''}: ${e.message}`);
-        return { error: true, status: status || null };
-    }
-};
-
-const runLpr = async (videoPath, logHashShort) => {
-    const framePaths = [1, 2, 3].map(s =>
-        path.join('/tmp', `frame_${logHashShort}_${s}s.jpg`)
-    );
-
-    const extractedFrames = [];
-    for (let i = 0; i < 3; i++) {
-        const fp = extractFrame(videoPath, i + 1, framePaths[i]);
-        if (fp) extractedFrames.push(fp);
-    }
-
-    console.log(`AWAS LPR: Extracted ${extractedFrames.length} frames`);
-
-    if (extractedFrames.length === 0) {
-        cleanupFiles(...framePaths);
-        return null;
-    }
-
-    let best = null;
-    let sawRateLimit = false;
-
-    for (let i = 0; i < extractedFrames.length; i++) {
-        const result = await callPlateRecognizer(extractedFrames[i]);
-
-        if (result && result.error) {
-            if (result.status === 429) {
-                sawRateLimit = true;
-                console.warn(`AWAS LPR: Rate limited (429) on frame ${i + 1}, backing off 1.5s`);
-                await sleep(1500);
-                const retry = await callPlateRecognizer(extractedFrames[i]);
-                if (retry && !retry.error && retry.plate) {
-                    if (!best || retry.confidence > best.confidence) best = retry;
-                    if (best && best.confidence >= LPR_CONFIDENCE_THRESHOLD) break;
-                }
-            }
-            await sleep(800);
-            continue;
-        }
-
-        if (result && result.plate) {
-            if (!best || result.confidence > best.confidence) best = result;
-            if (best.confidence >= LPR_CONFIDENCE_THRESHOLD) break;
-        }
-
-        if (i < extractedFrames.length - 1) await sleep(800);
-    }
-
-    cleanupFiles(...framePaths);
-
-    if (best && best.plate) {
-        console.log(`AWAS LPR: Best read ${best.plate} @ ${best.confidence}`);
-    } else {
-        console.log(`AWAS LPR: No plate read${sawRateLimit ? ' (rate limited)' : ''}`);
-    }
-
-    if (!best && sawRateLimit) return { rateLimited: true };
-    return best;
-};
-
 // ─── VERIFY & SEAL ───────────────────────────────────────────────────────────
-// Pipeline: LPR gate → SHA-256 raw buffer → upload raw to Cloudinary → writ issued
-// One video only: raw video. User keeps their copy. AWAS keeps identical copy.
-// Same bytes both sides = same SHA-256. This is the tamper-proof chain.
+// Pipeline:
+//   1. Validate inputs
+//   2. Verify driver is paid + active
+//   3. SHA-256 video buffer
+//   4. SHA-256 each image buffer (up to 4)
+//   5. Upload video to awas/raw Cloudinary
+//   6. Upload each image to awas/images Cloudinary
+//   7. Create writ record in DB
+//
+// No LPR. No FFmpeg. Login + password is the gatekeeper.
+// Writ is issued under the registered plate — not what is in the video.
+// User liability: popup on FE warns them to film their own vehicle only.
 
 exports.verifyAndSeal = async (req, res) => {
     console.log('AWAS verifyAndSeal called');
-    let rawTempPath = null;
 
     try {
         const {
@@ -197,7 +60,7 @@ exports.verifyAndSeal = async (req, res) => {
         if (otherVehicleHash && !/^[a-f0-9]{64}$/i.test(otherVehicleHash)) {
             return res.status(400).json({ error: "Invalid other vehicle hash format." });
         }
-        if (!req.file) {
+        if (!req.files || !req.files.video || req.files.video.length === 0) {
             return res.status(400).json({ error: "Video file required." });
         }
 
@@ -206,86 +69,46 @@ exports.verifyAndSeal = async (req, res) => {
             return res.status(409).json({ error: "Evidence already sealed." });
         }
 
-        const normalizedClaimedPlate = claimedPlate.toUpperCase().replace(/\s+/g, '');
-        const videoBuffer = req.file.buffer;
-        const logHashShort = logHash.substring(0, 16);
+        const normalizedPlate = claimedPlate.toUpperCase().replace(/\s+/g, '');
 
-        // STEP 1: Write raw video to /tmp for LPR frame extraction only
-        rawTempPath = path.join('/tmp', `raw_${logHashShort}.mp4`);
-        fs.writeFileSync(rawTempPath, videoBuffer);
-        console.log(`AWAS LPR: Running plate check. Claimed plate: ${normalizedClaimedPlate}`);
-
-        // STEP 2: LPR gate
-        const lprResult = await runLpr(rawTempPath, logHashShort);
-        console.log(`AWAS LPR result: ${JSON.stringify(lprResult)}`);
-
-        if (lprResult && lprResult.rateLimited) {
-            console.warn(`AWAS LPR: Rejected — API rate limited for ${logHash}`);
-            cleanupFiles(rawTempPath);
-            return res.status(503).json({
-                error: "Perkhidmatan pengesahan plat sibuk sebentar. Sila cuba lagi dalam beberapa saat.",
-                reason: "RATE_LIMITED"
-            });
-        }
-
-        if (!lprResult || !lprResult.plate || lprResult.confidence < LPR_CONFIDENCE_THRESHOLD) {
-            console.warn(`AWAS LPR: Rejected — plate unreadable for ${logHash}`);
-            cleanupFiles(rawTempPath);
-            return res.status(422).json({
-                error: "Video rejected. Plat kenderaan tidak dapat dibaca dengan jelas. Pastikan plat kenderaan anda kelihatan jelas dalam video.",
-                reason: "UNREADABLE"
-            });
-        }
-
-        const detectedPlate = lprResult.plate.toUpperCase().replace(/\s+/g, '');
-        console.log(`AWAS LPR: Detected ${detectedPlate} confidence ${lprResult.confidence}`);
-
-        const distance = plateDistance(detectedPlate, normalizedClaimedPlate);
-        console.log(`AWAS LPR: Distance ${distance} between video=${detectedPlate} and login=${normalizedClaimedPlate}`);
-
-        if (distance > LPR_MAX_PLATE_DISTANCE) {
-            console.warn(`AWAS LPR: Rejected — plate mismatch (distance ${distance}). Video=${detectedPlate} Login=${normalizedClaimedPlate}`);
-            cleanupFiles(rawTempPath);
-            return res.status(422).json({
-                error: "Video rejected. Plat dalam video tidak sepadan dengan plat log masuk anda. Hanya video kenderaan anda sendiri diterima.",
-                reason: "MISMATCH"
-            });
-        }
-
+        // Verify driver is registered, paid and active
         const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: normalizedClaimedPlate }
+            where: { vehiclePlate: normalizedPlate }
         });
 
         if (!driver) {
-            console.warn(`AWAS LPR: Rejected — login plate ${normalizedClaimedPlate} not a registered AWAS account`);
-            cleanupFiles(rawTempPath);
             return res.status(422).json({
-                error: "Video rejected. Akaun AWAS tidak dijumpai untuk plat log masuk anda.",
+                error: "Akaun AWAS tidak dijumpai untuk plat log masuk anda.",
                 reason: "NOT_REGISTERED"
             });
         }
 
         if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
-            console.warn(`AWAS LPR: Rejected — driver ${normalizedClaimedPlate} subscription inactive/expired`);
-            cleanupFiles(rawTempPath);
             return res.status(403).json({
                 error: "Langganan tidak aktif. Sila perbaharui langganan anda.",
                 reason: "SUBSCRIPTION_INACTIVE"
             });
         }
 
-        // GATE PASSED
-        console.log(`AWAS LPR: GATE PASSED for ${detectedPlate}. Issuing writ.`);
-
         const validRoadConditions = ['DRY', 'WET', 'FLOODED', 'UNDER_CONSTRUCTION', 'UNKNOWN'];
         const validWeatherConditions = ['CLEAR', 'RAINY', 'FOGGY', 'HAZY', 'NIGHT', 'UNKNOWN'];
         const validInjuryStatuses = ['NONE', 'MINOR', 'SERIOUS'];
 
-        // STEP 3: SHA-256 from raw buffer — same bytes user holds on their device
+        const logHashShort = logHash.substring(0, 16);
+        const videoBuffer = req.files.video[0].buffer;
+
+        // STEP 1: SHA-256 video
         const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
         console.log(`AWAS Video Hash: ${videoHash}`);
 
-        // STEP 4: Upload raw video to Cloudinary — one video, one copy, untouched
+        // STEP 2: SHA-256 each image (up to 4)
+        const imageFiles = (req.files.images || []).slice(0, 4);
+        const imageHashes = imageFiles.map(f =>
+            crypto.createHash('sha256').update(f.buffer).digest('hex')
+        );
+        console.log(`AWAS Images: ${imageFiles.length} received`);
+
+        // STEP 3: Upload video to Cloudinary awas/raw
         const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
             resource_type: 'video',
             folder: 'awas/raw',
@@ -295,16 +118,31 @@ exports.verifyAndSeal = async (req, res) => {
         const rawVideoUrl = rawUploadResult.secure_url;
         console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
 
-        // STEP 5: Create writ record in DB
+        // STEP 4: Upload each image to Cloudinary awas/images
+        const imageUrls = [];
+        for (let i = 0; i < imageFiles.length; i++) {
+            const imgResult = await uploadBufferToCloudinary(imageFiles[i].buffer, {
+                resource_type: 'image',
+                folder: 'awas/images',
+                public_id: `img_${logHashShort}_${i + 1}`,
+                overwrite: true
+            });
+            imageUrls.push(imgResult.secure_url);
+            console.log(`AWAS Image ${i + 1} URL: ${imgResult.secure_url}`);
+        }
+
+        // STEP 5: Create writ record
         const accidentRecord = await prisma.accidentLog.create({
             data: {
                 logHash,
-                vehiclePlate: detectedPlate,
+                vehiclePlate: normalizedPlate,
                 latitude: parseFloat(latitude),
                 longitude: parseFloat(longitude),
                 videoUrl: rawVideoUrl,
                 rawVideoUrl,
                 videoHash,
+                imageUrls: imageUrls.length > 0 ? imageUrls : null,
+                imageHashes: imageHashes.length > 0 ? imageHashes : null,
                 incidentDescription: incidentDescription || null,
                 roadCondition: validRoadConditions.includes(roadCondition) ? roadCondition : 'UNKNOWN',
                 weatherCondition: validWeatherConditions.includes(weatherCondition) ? weatherCondition : 'UNKNOWN',
@@ -316,9 +154,7 @@ exports.verifyAndSeal = async (req, res) => {
                 isReportPaid: false,
                 emergencyAlertSent: false,
                 videoStatus: 'VERIFIED',
-                videoSealedAt: new Date(),
-                lprStatus: 'MATCHED',
-                lprDetectedPlate: detectedPlate
+                videoSealedAt: new Date()
             }
         });
 
@@ -329,23 +165,22 @@ exports.verifyAndSeal = async (req, res) => {
             data: { writNumber }
         });
 
-        // Cleanup — raw temp only, no sealed temp needed anymore
-        cleanupFiles(rawTempPath);
-        console.log(`AWAS Writ issued for ${detectedPlate}: ${writNumber}`);
+        console.log(`AWAS Writ issued for ${normalizedPlate}: ${writNumber}`);
 
         return res.status(201).json({
-            message: "Plate verified. Writ issued.",
+            message: "Writ issued.",
             writNumber,
             hash: logHash,
             videoHash,
             rawVideoUrl,
-            verifiedPlate: detectedPlate,
+            imageUrls,
+            imageHashes,
+            verifiedPlate: normalizedPlate,
             vehicleMakeModel: driver.vehicleMakeModel,
             vehicleType: driver.vehicleType
         });
 
     } catch (error) {
-        cleanupFiles(rawTempPath);
         try {
             if (req.body && req.body.logHash) {
                 await prisma.accidentLog.updateMany({
