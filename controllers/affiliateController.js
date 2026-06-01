@@ -7,25 +7,18 @@ const prisma = new PrismaClient();
 const AFFILIATE_CUT = 4.99;
 
 // BECOME AFFILIATE
-// Any active registered driver can become an affiliate
 exports.joinAffiliate = async (req, res) => {
     try {
-        const { vehiclePlate, bankName, bankAccountNumber, bankAccountName, duitnowNumber } = req.body;
+        // Plate comes from verified JWT — not from body
+        const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
 
-        if (!vehiclePlate) {
-            return res.status(400).json({ error: 'Vehicle plate required.' });
-        }
-
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
-
-        // Check driver exists and is active
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: plate },
             include: { affiliate: true }
         });
 
         if (!driver) {
-            return res.status(404).json({ error: 'Driver not found. Please register first.' });
+            return res.status(404).json({ error: 'Driver not found.' });
         }
         if (driver.subStatus !== 'ACTIVE') {
             return res.status(403).json({ error: 'Your AWAS subscription must be active to become an affiliate.' });
@@ -38,15 +31,10 @@ exports.joinAffiliate = async (req, res) => {
             });
         }
 
-        // Create affiliate record
         const affiliate = await prisma.affiliate.create({
             data: {
                 driverId: driver.id,
-                referralCode: driver.referralCode,
-                bankName: bankName || null,
-                bankAccountNumber: bankAccountNumber || null,
-                bankAccountName: bankAccountName || null,
-                duitnowNumber: duitnowNumber || null
+                referralCode: driver.referralCode
             }
         });
 
@@ -67,8 +55,8 @@ exports.joinAffiliate = async (req, res) => {
 // GET AFFILIATE DASHBOARD
 exports.getDashboard = async (req, res) => {
     try {
-        const { vehiclePlate } = req.params;
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+        // Plate comes from verified JWT
+        const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
 
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: plate },
@@ -93,7 +81,7 @@ exports.getDashboard = async (req, res) => {
             return res.status(404).json({ error: 'Driver not found.' });
         }
         if (!driver.affiliate) {
-            return res.status(404).json({ error: 'Not an affiliate yet. Join the program first.' });
+            return res.status(404).json({ error: 'Not an affiliate yet.', reason: 'NOT_AFFILIATE' });
         }
 
         const affiliate = driver.affiliate;
@@ -138,8 +126,9 @@ exports.getDashboard = async (req, res) => {
 // UPDATE BANK DETAILS
 exports.updateBankDetails = async (req, res) => {
     try {
-        const { vehiclePlate, bankName, bankAccountNumber, bankAccountName, duitnowNumber } = req.body;
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+        // Plate comes from verified JWT
+        const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
+        const { bankName, bankAccountNumber, bankAccountName, duitnowNumber } = req.body;
 
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: plate },
@@ -166,8 +155,8 @@ exports.updateBankDetails = async (req, res) => {
 // REQUEST PAYOUT
 exports.requestPayout = async (req, res) => {
     try {
-        const { vehiclePlate } = req.body;
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+        // Plate comes from verified JWT
+        const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
 
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: plate },
@@ -192,7 +181,6 @@ exports.requestPayout = async (req, res) => {
             });
         }
 
-        // Create payout request
         const payout = await prisma.affiliatePayout.create({
             data: {
                 affiliateId: affiliate.id,
@@ -202,7 +190,6 @@ exports.requestPayout = async (req, res) => {
             }
         });
 
-        // Reset pending payout
         await prisma.affiliate.update({
             where: { id: affiliate.id },
             data: { pendingPayout: 0 }
@@ -222,14 +209,12 @@ exports.requestPayout = async (req, res) => {
 // CREDIT AFFILIATE EARNING (called internally after payment confirmed)
 exports.creditAffiliateEarning = async (vehiclePlate, paymentId, paymentType) => {
     try {
-        // Find which affiliate referred this driver
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate }
         });
 
         if (!driver || !driver.referredByCode) return;
 
-        // Find the affiliate
         const referrerDriver = await prisma.driver.findUnique({
             where: { referralCode: driver.referredByCode },
             include: { affiliate: true }
@@ -240,7 +225,6 @@ exports.creditAffiliateEarning = async (vehiclePlate, paymentId, paymentType) =>
 
         const affiliate = referrerDriver.affiliate;
 
-        // Create earning record
         await prisma.affiliateEarning.create({
             data: {
                 affiliateId: affiliate.id,
@@ -252,7 +236,6 @@ exports.creditAffiliateEarning = async (vehiclePlate, paymentId, paymentType) =>
             }
         });
 
-        // Update affiliate totals
         await prisma.affiliate.update({
             where: { id: affiliate.id },
             data: {
