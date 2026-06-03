@@ -170,9 +170,9 @@ exports.requestPayout = async (req, res) => {
         const affiliate = driver.affiliate;
         const pending = parseFloat(affiliate.pendingPayout);
 
-        if (pending < 10) {
+        if (pending <= 0) {
             return res.status(400).json({
-                error: `Minimum payout is RM10. Your pending balance is RM${pending.toFixed(2)}.`
+                error: 'Tiada pendapatan belum dibayar. Kongsi pautan anda untuk mula menjana komisen.'
             });
         }
         if (!affiliate.bankAccountNumber && !affiliate.duitnowNumber) {

@@ -1,5 +1,5 @@
 // ==========================================
-// FILE: routes/drivers.js — UPDATED
+// FILE: routes/drivers.js
 // ==========================================
 const express = require('express');
 const router = express.Router();
@@ -19,5 +19,8 @@ router.post('/reset-password', driversController.resetPassword);
 
 // Validate referral code
 router.get('/referral/:code', driversController.validateReferralCode);
+
+// Delete account (triple verification: plate + password + MyKad last 4)
+router.delete('/account', driversController.deleteAccount);
 
 module.exports = router;

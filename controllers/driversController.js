@@ -2,8 +2,6 @@
 // FILE: controllers/driversController.js
 // ==========================================
 const { PrismaClient } = require('@prisma/client');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
 const prisma = new PrismaClient();
 
 // Generate unique 8-char referral code
@@ -16,10 +14,10 @@ function generateReferralCode() {
     return code;
 }
 
-// REGISTER DRIVER (now requires a password)
+// REGISTER DRIVER
 exports.registerDriver = async (req, res) => {
     try {
-        const { vehiclePlate, vehicleMakeModel, vehicleType, mykadLastFour, phone, password, consentGiven, referredByCode } = req.body;
+        const { vehiclePlate, vehicleMakeModel, vehicleType, mykadLastFour, phone, consentGiven, referredByCode } = req.body;
 
         if (!consentGiven) {
             return res.status(400).json({ error: "PDPA Consent Mandatory." });
@@ -30,9 +28,6 @@ exports.registerDriver = async (req, res) => {
         if (!/^\d{4}$/.test(mykadLastFour)) {
             return res.status(400).json({ error: "Invalid MyKad input. Last 4 digits only." });
         }
-        if (!password || password.length < 6) {
-            return res.status(400).json({ error: "Kata laluan diperlukan (minimum 6 aksara)." });
-        }
         if (vehicleType && !['CAR', 'MOTORCYCLE', 'LORRY', 'BUS', 'VAN'].includes(vehicleType)) {
             return res.status(400).json({ error: "Invalid vehicle type." });
         }
@@ -40,8 +35,6 @@ exports.registerDriver = async (req, res) => {
         const normalizedPlate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
         const expiryDate = new Date();
         expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-
-        const passwordHash = await bcrypt.hash(password, 12);
 
         // Validate referral code if provided
         let validReferralCode = null;
@@ -72,7 +65,6 @@ exports.registerDriver = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone: phone || null,
-                passwordHash,
                 subStatus: 'ACTIVE',
                 subExpiresAt: expiryDate
             },
@@ -82,7 +74,6 @@ exports.registerDriver = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone: phone || null,
-                passwordHash,
                 subStatus: 'ACTIVE',
                 subExpiresAt: expiryDate,
                 referralCode: newReferralCode,
@@ -100,102 +91,6 @@ exports.registerDriver = async (req, res) => {
     } catch (error) {
         console.error("AWAS Driver Registration Fault:", error);
         res.status(500).json({ error: "Internal registry error." });
-    }
-};
-
-// LOGIN DRIVER (plate + password)
-exports.loginDriver = async (req, res) => {
-    try {
-        const { vehiclePlate, password } = req.body;
-
-        if (!vehiclePlate || !password) {
-            return res.status(400).json({ error: "Nombor plat dan kata laluan diperlukan." });
-        }
-
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
-
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: plate }
-        });
-
-        if (!driver) {
-            return res.status(401).json({ error: "Nombor plat atau kata laluan salah." });
-        }
-
-        // Account predates passwords (legacy) — force a reset
-        if (!driver.passwordHash) {
-            return res.status(409).json({ error: "Akaun ini belum mempunyai kata laluan. Sila tetapkan melalui 'Lupa Kata Laluan'.", reason: "NO_PASSWORD" });
-        }
-
-        const passwordMatch = await bcrypt.compare(password, driver.passwordHash);
-        if (!passwordMatch) {
-            return res.status(401).json({ error: "Nombor plat atau kata laluan salah." });
-        }
-
-        if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
-            return res.status(403).json({ error: "Langganan AWAS anda telah tamat. Sila perbaharui." });
-        }
-
-        const token = jwt.sign(
-            { plate: driver.vehiclePlate, id: driver.id },
-            process.env.JWT_SECRET,
-            { expiresIn: '30d' }
-        );
-
-        return res.status(200).json({
-            message: "Log masuk berjaya.",
-            token,
-            vehiclePlate: driver.vehiclePlate,
-            vehicleMakeModel: driver.vehicleMakeModel,
-            vehicleType: driver.vehicleType,
-            mykadLastFour: driver.mykadLastFour,
-            referralCode: driver.referralCode
-        });
-
-    } catch (err) {
-        console.error('AWAS Driver Login Fault:', err);
-        return res.status(500).json({ error: 'Server error.' });
-    }
-};
-
-// RESET PASSWORD (plate + MyKad last-4 — no WhatsApp dependency)
-exports.resetPassword = async (req, res) => {
-    try {
-        const { vehiclePlate, mykadLastFour, newPassword } = req.body;
-
-        if (!vehiclePlate || !mykadLastFour || !newPassword) {
-            return res.status(400).json({ error: "Semua medan diperlukan." });
-        }
-        if (!/^\d{4}$/.test(mykadLastFour)) {
-            return res.status(400).json({ error: "MyKad 4 digit terakhir tidak sah." });
-        }
-        if (newPassword.length < 6) {
-            return res.status(400).json({ error: "Kata laluan baru minimum 6 aksara." });
-        }
-
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
-
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: plate }
-        });
-
-        // Generic message — do not reveal whether the plate exists
-        if (!driver || driver.mykadLastFour !== mykadLastFour) {
-            return res.status(401).json({ error: "Nombor plat atau MyKad tidak sepadan." });
-        }
-
-        const passwordHash = await bcrypt.hash(newPassword, 12);
-
-        await prisma.driver.update({
-            where: { vehiclePlate: plate },
-            data: { passwordHash }
-        });
-
-        return res.status(200).json({ message: "Kata laluan berjaya ditetapkan semula. Sila log masuk." });
-
-    } catch (err) {
-        console.error('AWAS Reset Password Fault:', err);
-        return res.status(500).json({ error: 'Server error.' });
     }
 };
 
@@ -250,5 +145,145 @@ exports.validateReferralCode = async (req, res) => {
     } catch (err) {
         console.error('Referral validation fault:', err);
         return res.status(500).json({ error: 'Server error.' });
+    }
+};
+// DELETE ACCOUNT
+// Triple verification: plate + password + MyKad last 4
+// Deletes: Cloudinary files, personal data
+// Anonymises: AccidentLogs (keep writ/hash/GPS, strip identity)
+// Keeps: Payment records (anonymised), writ audit trail
+exports.deleteAccount = async (req, res) => {
+    try {
+        const { vehiclePlate, password, mykadLastFour } = req.body;
+
+        if (!vehiclePlate || !password || !mykadLastFour) {
+            return res.status(400).json({ error: 'Semua medan diperlukan untuk pengesahan.' });
+        }
+        if (!/^\d{4}$/.test(mykadLastFour)) {
+            return res.status(400).json({ error: 'MyKad 4 digit terakhir tidak sah.' });
+        }
+
+        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+
+        const driver = await prisma.driver.findUnique({
+            where: { vehiclePlate: plate },
+            include: {
+                logs: true,
+                affiliate: {
+                    include: {
+                        earnings: true,
+                        payouts: true
+                    }
+                }
+            }
+        });
+
+        // Generic error — do not reveal whether plate exists
+        if (!driver) {
+            return res.status(401).json({ error: 'Maklumat pengesahan tidak sepadan. Sila cuba lagi.' });
+        }
+        if (!driver.passwordHash) {
+            return res.status(401).json({ error: 'Maklumat pengesahan tidak sepadan. Sila cuba lagi.' });
+        }
+
+        const passwordMatch = await bcrypt.compare(password, driver.passwordHash);
+        if (!passwordMatch || driver.mykadLastFour !== mykadLastFour) {
+            return res.status(401).json({ error: 'Maklumat pengesahan tidak sepadan. Sila cuba lagi.' });
+        }
+
+        // ── STEP 1: Delete Cloudinary files ─────────────────────────────
+        // Collect all Cloudinary public IDs from logs
+        const cloudinary = require('cloudinary').v2;
+        cloudinary.config({
+            cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+            api_key: process.env.CLOUDINARY_API_KEY,
+            api_secret: process.env.CLOUDINARY_API_SECRET
+        });
+
+        for (const log of driver.logs) {
+            // Delete video
+            if (log.videoUrl) {
+                try {
+                    // Extract public_id from Cloudinary URL
+                    const urlParts = log.videoUrl.split('/');
+                    const fileWithExt = urlParts[urlParts.length - 1];
+                    const publicId = `awas/raw/${fileWithExt.split('.')[0]}`;
+                    await cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
+                } catch (e) {
+                    console.warn(`Cloudinary video delete warn for log ${log.id}:`, e.message);
+                }
+            }
+            // Delete images
+            if (log.imageUrls && Array.isArray(log.imageUrls)) {
+                for (const imgUrl of log.imageUrls) {
+                    try {
+                        const urlParts = imgUrl.split('/');
+                        const fileWithExt = urlParts[urlParts.length - 1];
+                        const publicId = `awas/images/${fileWithExt.split('.')[0]}`;
+                        await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+                    } catch (e) {
+                        console.warn(`Cloudinary image delete warn:`, e.message);
+                    }
+                }
+            }
+        }
+
+        // ── STEP 2: Anonymise AccidentLogs ───────────────────────────────
+        // Keep: writNumber, logHash, latitude, longitude, createdAt, imageHashes
+        // Strip: videoUrl, imageUrls, vehiclePlate ref, incident details
+        if (driver.logs.length > 0) {
+            await prisma.accidentLog.updateMany({
+                where: { driverId: driver.id },
+                data: {
+                    videoUrl: '[DELETED]',
+                    imageUrls: [],
+                    incidentDescription: null,
+                    otherVehiclePlate: null,
+                    otherVehicleMakeModel: null,
+                    otherVehicleVideoUrl: null,
+                    otherVehicleHash: null
+                }
+            });
+        }
+
+        // ── STEP 3: Anonymise affiliate earnings (keep for audit) ────────
+        if (driver.affiliate) {
+            await prisma.affiliate.update({
+                where: { id: driver.affiliate.id },
+                data: {
+                    bankName: null,
+                    bankAccountNumber: null,
+                    bankAccountName: null,
+                    duitnowNumber: null
+                }
+            });
+        }
+
+        // ── STEP 4: Delete driver personal data ──────────────────────────
+        // Disconnect logs first (keep them anonymised), then delete driver
+        await prisma.accidentLog.updateMany({
+            where: { driverId: driver.id },
+            data: { driverId: null }
+        });
+
+        // Delete affiliate earnings link if exists, then affiliate, then driver
+        if (driver.affiliate) {
+            await prisma.affiliateEarning.deleteMany({ where: { affiliateId: driver.affiliate.id } });
+            await prisma.affiliatePayout.deleteMany({ where: { affiliateId: driver.affiliate.id } });
+            await prisma.affiliate.delete({ where: { id: driver.affiliate.id } });
+        }
+
+        // Delete driver record
+        await prisma.driver.delete({ where: { vehiclePlate: plate } });
+
+        console.log(`AWAS Account Deleted: ${plate} — Cloudinary files removed, logs anonymised.`);
+
+        return res.status(200).json({
+            message: 'Akaun anda telah berjaya dipadam. Semua data peribadi telah dikemaskini. Terima kasih kerana menggunakan AWAS.'
+        });
+
+    } catch (err) {
+        console.error('AWAS Delete Account Fault:', err);
+        return res.status(500).json({ error: 'Ralat pelayan. Sila cuba lagi atau hubungi hello@awas.asia.' });
     }
 };
