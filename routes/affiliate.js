@@ -10,6 +10,5 @@ const auth = require('../middleware/auth');
 router.post('/join', auth, affiliateController.joinAffiliate);
 router.get('/dashboard', auth, affiliateController.getDashboard);
 router.put('/bank', auth, affiliateController.updateBankDetails);
-router.post('/payout', auth, affiliateController.requestPayout);
 
 module.exports = router;

@@ -15,14 +15,29 @@ app.use(helmet({
     contentSecurityPolicy: false
 }));
 
-// CORS - locked to your domain
+// CORS
+const allowedOrigins = [
+    'https://awas.asia',
+    'https://www.awas.asia',
+    'https://awas-pwa.vercel.app'
+];
+
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGIN || '*',
-    methods: ['GET', 'POST', 'PATCH', 'PUT'],
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, Postman, server-to-server)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
 }));
 
+// JSON body parser
 app.use(express.json());
+
+// URL-encoded body parser — required for ToyyibPay webhook callbacks
+app.use(express.urlencoded({ extended: true }));
 
 // Brute force protection on auth endpoints
 const authLimiter = rateLimit({

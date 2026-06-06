@@ -46,9 +46,6 @@ exports.registerDriver = async (req, res) => {
         }
 
         const normalizedPlate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
-        const expiryDate = new Date();
-        expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-
         const passwordHash = await bcrypt.hash(password, 12);
 
         let validReferralCode = null;
@@ -67,6 +64,7 @@ exports.registerDriver = async (req, res) => {
             if (!existing) isUnique = true;
         }
 
+        // Register driver with PENDING status — activated after payment confirmed
         const userProfile = await prisma.driver.upsert({
             where: { vehiclePlate: normalizedPlate },
             update: {
@@ -74,9 +72,7 @@ exports.registerDriver = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone: phone || null,
-                passwordHash,
-                subStatus: 'ACTIVE',
-                subExpiresAt: expiryDate
+                passwordHash
             },
             create: {
                 vehiclePlate: normalizedPlate,
@@ -85,17 +81,17 @@ exports.registerDriver = async (req, res) => {
                 mykadLastFour,
                 phone: phone || null,
                 passwordHash,
-                subStatus: 'ACTIVE',
-                subExpiresAt: expiryDate,
+                subStatus: 'EXPIRED',
+                subExpiresAt: new Date(),
                 referralCode: newReferralCode,
                 referredByCode: validReferralCode
             }
         });
 
         res.status(201).json({
-            message: "Vehicle profile registered successfully.",
+            message: "Profil kenderaan berjaya didaftarkan. Sila teruskan pembayaran untuk mengaktifkan akaun.",
+            vehiclePlate: userProfile.vehiclePlate,
             vehicleType: userProfile.vehicleType,
-            expiry: userProfile.subExpiresAt,
             referralCode: userProfile.referralCode
         });
 
@@ -129,7 +125,7 @@ exports.loginDriver = async (req, res) => {
             return res.status(401).json({ error: "Nombor plat atau kata laluan salah." });
         }
         if (driver.subStatus !== 'ACTIVE' || new Date() > driver.subExpiresAt) {
-            return res.status(403).json({ error: "Langganan AWAS anda telah tamat. Sila perbaharui." });
+            return res.status(403).json({ error: "Langganan AWAS anda belum aktif atau telah tamat. Sila bayar untuk mengaktifkan.", reason: "SUBSCRIPTION_INACTIVE" });
         }
 
         const token = jwt.sign(
@@ -247,7 +243,7 @@ exports.deleteAccount = async (req, res) => {
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: plate },
             include: {
-                logs: true,
+                accidentLogs: true,
                 affiliate: { include: { earnings: true, payouts: true } }
             }
         });
@@ -261,8 +257,8 @@ exports.deleteAccount = async (req, res) => {
         }
 
         // ── STEP 1: Delete Cloudinary files ─────────────────────────────
-        for (const log of driver.logs) {
-            if (log.videoUrl) {
+        for (const log of driver.accidentLogs) {
+            if (log.videoUrl && log.videoUrl !== '[DELETED]') {
                 try {
                     const urlParts = log.videoUrl.split('/');
                     const fileWithExt = urlParts[urlParts.length - 1];
@@ -286,10 +282,10 @@ exports.deleteAccount = async (req, res) => {
             }
         }
 
-        // ── STEP 2: Anonymise AccidentLogs ───────────────────────────────
-        if (driver.logs.length > 0) {
+        // ── STEP 2: Anonymise AccidentLogs via vehiclePlate ──────────────
+        if (driver.accidentLogs.length > 0) {
             await prisma.accidentLog.updateMany({
-                where: { driverId: driver.id },
+                where: { vehiclePlate: plate },
                 data: {
                     videoUrl: '[DELETED]',
                     imageUrls: [],
@@ -310,18 +306,19 @@ exports.deleteAccount = async (req, res) => {
             });
         }
 
-        // ── STEP 4: Disconnect logs, delete affiliate, delete driver ─────
-        await prisma.accidentLog.updateMany({
-            where: { driverId: driver.id },
-            data: { driverId: null }
-        });
-
+        // ── STEP 4: Disconnect logs from driver via vehiclePlate ─────────
+        // AccidentLog relation is via vehiclePlate — logs stay anonymised
+        // We delete the driver record — logs remain with vehiclePlate as orphan string
         if (driver.affiliate) {
             await prisma.affiliateEarning.deleteMany({ where: { affiliateId: driver.affiliate.id } });
             await prisma.affiliatePayout.deleteMany({ where: { affiliateId: driver.affiliate.id } });
             await prisma.affiliate.delete({ where: { id: driver.affiliate.id } });
         }
 
+        // Delete payments for this plate
+        await prisma.payment.deleteMany({ where: { vehiclePlate: plate } });
+
+        // Delete driver record
         await prisma.driver.delete({ where: { vehiclePlate: plate } });
 
         console.log(`AWAS Account Deleted: ${plate}`);

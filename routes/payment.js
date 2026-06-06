@@ -5,13 +5,13 @@ const express = require('express');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 
-// Create registration bill
+// Create registration bill (ToyyibPay)
 router.post('/register', paymentController.createRegistrationBill);
 
-// Create writ bill
+// Create writ bill (ToyyibPay)
 router.post('/writ', paymentController.createWritBill);
 
-// Billplz webhook
+// ToyyibPay webhook — called by ToyyibPay after payment
 router.post('/webhook', paymentController.handleWebhook);
 
 // Get payment status

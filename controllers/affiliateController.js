@@ -5,11 +5,11 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 const AFFILIATE_CUT = 4.99;
+const PAYOUT_THRESHOLD = 49.90;
 
 // BECOME AFFILIATE
 exports.joinAffiliate = async (req, res) => {
     try {
-        // Plate comes from verified JWT — not from body
         const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
 
         const driver = await prisma.driver.findUnique({
@@ -27,7 +27,7 @@ exports.joinAffiliate = async (req, res) => {
             return res.status(200).json({
                 message: 'Already an affiliate.',
                 referralCode: driver.affiliate.referralCode,
-                referralLink: `https://awas-pwa.vercel.app/register.html?ref=${driver.affiliate.referralCode}`
+                referralLink: `https://awas.asia/register.html?ref=${driver.affiliate.referralCode}`
             });
         }
 
@@ -41,9 +41,10 @@ exports.joinAffiliate = async (req, res) => {
         return res.status(201).json({
             message: 'Selamat datang ke AWAS Affiliate Program!',
             referralCode: affiliate.referralCode,
-            referralLink: `https://awas-pwa.vercel.app/register.html?ref=${affiliate.referralCode}`,
+            referralLink: `https://awas.asia/register.html?ref=${affiliate.referralCode}`,
             commissionPerReferral: `RM${AFFILIATE_CUT}`,
-            note: 'Share your link. Every registration earns you RM4.99 — including renewals every year.'
+            payoutThreshold: `RM${PAYOUT_THRESHOLD}`,
+            note: 'Kongsi pautan anda. Setiap pendaftaran menjana RM4.99 untuk anda — termasuk pembaharuan setiap tahun. Bayaran dibuat setiap 15 dan 30 hab apabila mencapai RM49.90.'
         });
 
     } catch (err) {
@@ -55,7 +56,6 @@ exports.joinAffiliate = async (req, res) => {
 // GET AFFILIATE DASHBOARD
 exports.getDashboard = async (req, res) => {
     try {
-        // Plate comes from verified JWT
         const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
 
         const driver = await prisma.driver.findUnique({
@@ -85,15 +85,20 @@ exports.getDashboard = async (req, res) => {
         }
 
         const affiliate = driver.affiliate;
+        const pending = parseFloat(affiliate.pendingPayout);
+        const payoutDue = pending >= PAYOUT_THRESHOLD;
 
         return res.status(200).json({
             referralCode: affiliate.referralCode,
-            referralLink: `https://awas-pwa.vercel.app/register.html?ref=${affiliate.referralCode}`,
+            referralLink: `https://awas.asia/register.html?ref=${affiliate.referralCode}`,
             stats: {
                 totalReferrals: affiliate.totalReferrals,
                 totalEarnings: parseFloat(affiliate.totalEarnings),
-                pendingPayout: parseFloat(affiliate.pendingPayout),
-                paidOut: parseFloat(affiliate.paidOut)
+                pendingPayout: pending,
+                paidOut: parseFloat(affiliate.paidOut),
+                payoutDue,
+                payoutThreshold: PAYOUT_THRESHOLD,
+                nextPayoutDates: 'Setiap 15 dan 30 hab bulan'
             },
             recentEarnings: affiliate.earnings.map(e => ({
                 date: e.createdAt,
@@ -126,7 +131,6 @@ exports.getDashboard = async (req, res) => {
 // UPDATE BANK DETAILS
 exports.updateBankDetails = async (req, res) => {
     try {
-        // Plate comes from verified JWT
         const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
         const { bankName, bankAccountNumber, bankAccountName, duitnowNumber } = req.body;
 
@@ -144,64 +148,10 @@ exports.updateBankDetails = async (req, res) => {
             data: { bankName, bankAccountNumber, bankAccountName, duitnowNumber }
         });
 
-        return res.status(200).json({ message: 'Bank details updated successfully.' });
+        return res.status(200).json({ message: 'Butiran bank berjaya dikemaskini.' });
 
     } catch (err) {
         console.error('Bank update fault:', err);
-        return res.status(500).json({ error: 'Server error.' });
-    }
-};
-
-// REQUEST PAYOUT
-exports.requestPayout = async (req, res) => {
-    try {
-        // Plate comes from verified JWT
-        const plate = req.institution.plate.toUpperCase().replace(/\s+/g, '');
-
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: plate },
-            include: { affiliate: true }
-        });
-
-        if (!driver || !driver.affiliate) {
-            return res.status(404).json({ error: 'Affiliate not found.' });
-        }
-
-        const affiliate = driver.affiliate;
-        const pending = parseFloat(affiliate.pendingPayout);
-
-        if (pending <= 0) {
-            return res.status(400).json({
-                error: 'Tiada pendapatan belum dibayar. Kongsi pautan anda untuk mula menjana komisen.'
-            });
-        }
-        if (!affiliate.bankAccountNumber && !affiliate.duitnowNumber) {
-            return res.status(400).json({
-                error: 'Please add your bank account or DuitNow number before requesting payout.'
-            });
-        }
-
-        const payout = await prisma.affiliatePayout.create({
-            data: {
-                affiliateId: affiliate.id,
-                amount: pending,
-                status: 'PENDING',
-                method: affiliate.duitnowNumber ? 'DuitNow' : 'IBG'
-            }
-        });
-
-        await prisma.affiliate.update({
-            where: { id: affiliate.id },
-            data: { pendingPayout: 0 }
-        });
-
-        return res.status(201).json({
-            message: `Payout request of RM${pending.toFixed(2)} submitted. Processing within 3 working days.`,
-            payoutId: payout.id
-        });
-
-    } catch (err) {
-        console.error('Payout request fault:', err);
         return res.status(500).json({ error: 'Server error.' });
     }
 };
