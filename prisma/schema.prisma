@@ -174,19 +174,19 @@ model InstitutionalUser {
 }
 
 model Payment {
-  id               Int               @id @default(autoincrement())
-  vehiclePlate     String            @map("vehicle_plate")
-  driver           Driver            @relation(fields: [vehiclePlate], references: [vehiclePlate])
-  amount           Decimal           @db.Decimal(10, 2)
-  type             PaymentType
-  status           PaymentStatus     @default(PENDING)
-  billplzBillId    String?           @unique @map("billplz_bill_id")
-  billplzUrl       String?           @map("billplz_url")
-  paidAt           DateTime?         @map("paid_at")
-  referralCode     String?           @map("referral_code")
-  affiliateCut     Decimal?          @db.Decimal(10, 2) @map("affiliate_cut")
-  createdAt        DateTime          @default(now()) @map("created_at")
-  affiliateEarning AffiliateEarning?
+  id                Int               @id @default(autoincrement())
+  vehiclePlate      String            @map("vehicle_plate")
+  driver            Driver            @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  amount            Decimal           @db.Decimal(10, 2)
+  type              PaymentType
+  status            PaymentStatus     @default(PENDING)
+  toyyibpayBillCode String?           @unique @map("toyyibpay_bill_code")
+  toyyibpayUrl      String?           @map("toyyibpay_url")
+  paidAt            DateTime?         @map("paid_at")
+  referralCode      String?           @map("referral_code")
+  affiliateCut      Decimal?          @db.Decimal(10, 2) @map("affiliate_cut")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  affiliateEarning  AffiliateEarning?
 
   @@map("payments")
 }
