@@ -33,6 +33,8 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('billDisplayMerchant', '1');
     params.append('billContentEmail', 'Terima kasih kerana mendaftar AWAS. Langganan anda kini aktif.');
     params.append('billChargeToCustomer', '0');
+    params.append('enableDuitNowQR', '1');
+    params.append('chargeDuitNowQR', '0');
 
     const response = await axios.post(
         `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`,
