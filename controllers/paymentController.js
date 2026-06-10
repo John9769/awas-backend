@@ -18,9 +18,9 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('categoryCode', process.env.TOYYIBPAY_CATEGORY_CODE);
     params.append('billName', billName);
     params.append('billDescription', billDescription);
-    params.append('billPriceSetting', '1');         // fixed amount
-    params.append('billPayorInfo', '1');             // collect payer info
-    params.append('billAmount', String(Math.round(billAmount * 100))); // in cents
+    params.append('billPriceSetting', '1');
+    params.append('billPayorInfo', '1');
+    params.append('billAmount', String(Math.round(billAmount * 100)));
     params.append('billReturnUrl', `${process.env.FE_URL}/login.html?payment=success`);
     params.append('billCallbackUrl', `${process.env.BE_URL}/api/payment/webhook`);
     params.append('billExternalReferenceNo', String(billExternalReferenceNo));
@@ -29,10 +29,10 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('billPhone', billPhone || '');
     params.append('billSplitPayment', '0');
     params.append('billSplitPaymentArgs', '');
-    params.append('billPaymentChannel', '0');        // FPX only
+    params.append('billPaymentChannel', '0');
     params.append('billDisplayMerchant', '1');
     params.append('billContentEmail', 'Terima kasih kerana mendaftar AWAS. Langganan anda kini aktif.');
-    params.append('billChargeToCustomer', '0');      // AWAS absorbs RM1 fee
+    params.append('billChargeToCustomer', '0');
 
     const response = await axios.post(
         `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`,
@@ -40,7 +40,6 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
 
-    // ToyyibPay returns array: [{ BillCode: 'xxxx', IsSuccess: '1', ... }]
     if (!response.data || !response.data[0] || !response.data[0].BillCode) {
         throw new Error(`ToyyibPay createBill failed: ${JSON.stringify(response.data)}`);
     }
@@ -67,7 +66,6 @@ exports.createRegistrationBill = async (req, res) => {
             return res.status(404).json({ error: 'Akaun AWAS tidak dijumpai.' });
         }
 
-        // Create pending payment record first to get paymentId
         const payment = await prisma.payment.create({
             data: {
                 vehiclePlate: plate,
@@ -79,7 +77,6 @@ exports.createRegistrationBill = async (req, res) => {
             }
         });
 
-        // Create ToyyibPay bill using paymentId as external reference
         const billCode = await createToyyibpayBill({
             billName: `AWAS-REG-${plate}`,
             billDescription: `AWAS Annual Protection - ${plate}`,
@@ -90,7 +87,6 @@ exports.createRegistrationBill = async (req, res) => {
             billPhone: driver.phone || ''
         });
 
-        // Update payment record with ToyyibPay bill code and URL
         await prisma.payment.update({
             where: { id: payment.id },
             data: {
@@ -118,11 +114,11 @@ exports.createRegistrationBill = async (req, res) => {
 exports.handleWebhook = async (req, res) => {
     try {
         const {
-            refno,          // billExternalReferenceNo — our paymentId
-            status_id,      // 1=success, 2=pending, 3=failed
-            billcode,       // ToyyibPay bill code
-            amount,         // amount in cents
-            transaction_id  // ToyyibPay transaction ID
+            refno,
+            status_id,
+            billcode,
+            amount,
+            transaction_id
         } = req.body;
 
         console.log(`AWAS ToyyibPay Webhook: refno=${refno} status_id=${status_id} billcode=${billcode}`);
@@ -145,7 +141,7 @@ exports.handleWebhook = async (req, res) => {
             return res.status(404).json({ error: 'Payment not found.' });
         }
 
-        // Handle pending — update bill code if not set, do nothing else
+        // Handle pending
         if (status_id === '2' || status_id === 2) {
             console.log(`AWAS Webhook: Payment pending for paymentId=${paymentId}`);
             if (!payment.toyyibpayBillCode && billcode) {
@@ -167,10 +163,10 @@ exports.handleWebhook = async (req, res) => {
             return res.status(200).json({ message: 'Payment failed recorded.' });
         }
 
-        // Handle success (status_id === '1')
+        // Handle success
         if (status_id === '1' || status_id === 1) {
 
-            // Idempotency — already processed
+            // Idempotency
             if (payment.status === 'PAID') {
                 console.log(`AWAS Webhook: Already processed paymentId=${paymentId}`);
                 return res.status(200).json({ message: 'Already processed.' });
@@ -186,33 +182,53 @@ exports.handleWebhook = async (req, res) => {
                 }
             });
 
-            // Activate driver subscription — 1 year from now
-            const expiryDate = new Date();
-            expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+            // Handle REGISTRATION — activate driver + credit affiliate
+            if (payment.type === 'REGISTRATION' || payment.type === 'RENEWAL') {
+                const expiryDate = new Date();
+                expiryDate.setFullYear(expiryDate.getFullYear() + 1);
 
-            await prisma.driver.update({
-                where: { vehiclePlate: payment.vehiclePlate },
-                data: {
-                    subStatus: 'ACTIVE',
-                    subExpiresAt: expiryDate
+                await prisma.driver.update({
+                    where: { vehiclePlate: payment.vehiclePlate },
+                    data: {
+                        subStatus: 'ACTIVE',
+                        subExpiresAt: expiryDate
+                    }
+                });
+
+                console.log(`AWAS: Driver ${payment.vehiclePlate} activated. Expires ${expiryDate}`);
+
+                if (payment.referralCode) {
+                    await creditAffiliateEarning(
+                        payment.vehiclePlate,
+                        payment.id,
+                        payment.type
+                    );
                 }
-            });
+            }
 
-            console.log(`AWAS: Driver ${payment.vehiclePlate} activated. Expires ${expiryDate}`);
+            // Handle WRIT — unlock PDF paywall
+            if (payment.type === 'WRIT') {
+                // Find the most recent unpaid writ for this plate
+                const log = await prisma.accidentLog.findFirst({
+                    where: {
+                        vehiclePlate: payment.vehiclePlate,
+                        isReportPaid: false
+                    },
+                    orderBy: { createdAt: 'desc' }
+                });
 
-            // Credit affiliate if referral was used
-            if (payment.referralCode) {
-                await creditAffiliateEarning(
-                    payment.vehiclePlate,
-                    payment.id,
-                    payment.type
-                );
+                if (log) {
+                    await prisma.accidentLog.update({
+                        where: { id: log.id },
+                        data: { isReportPaid: true }
+                    });
+                    console.log(`AWAS: Writ paywall cleared for ${payment.vehiclePlate} logId=${log.id}`);
+                }
             }
 
             return res.status(200).json({ message: 'Payment processed successfully.' });
         }
 
-        // Unknown status
         console.warn(`AWAS Webhook: Unknown status_id=${status_id}`);
         return res.status(200).json({ message: 'Unknown status ignored.' });
 
@@ -241,7 +257,6 @@ exports.createWritBill = async (req, res) => {
             return res.status(404).json({ error: 'Akaun AWAS tidak dijumpai.' });
         }
 
-        // Create pending payment record
         const payment = await prisma.payment.create({
             data: {
                 vehiclePlate: plate,
@@ -251,7 +266,6 @@ exports.createWritBill = async (req, res) => {
             }
         });
 
-        // Create ToyyibPay bill for RM8 writ
         const billCode = await createToyyibpayBill({
             billName: `AWAS-WRIT-${plate}`,
             billDescription: `AWAS Digital Writ Report - ${logHash.substring(0, 8)}`,

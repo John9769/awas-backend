@@ -7,6 +7,36 @@ const axios = require('axios');
 
 const PAYOUT_THRESHOLD = 49.90;
 
+// ─── HELPER: Get current payout cycle date range ─────────────────────────────
+// 1st–14th → pay on 15th (cycleStart=1st, cycleEnd=14th)
+// 15th–29th → pay on 30th (cycleStart=15th, cycleEnd=29th)
+// 30th–31st → carry to next month 15th (cycleStart=30th prev month, cycleEnd=31st prev month)
+function getCurrentCycleDateRange() {
+    const now = new Date();
+    const day = now.getDate();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+
+    let cycleStart, cycleEnd;
+
+    if (day <= 14) {
+        // Processing on 15th — cover 1st to 14th
+        cycleStart = new Date(year, month, 1, 0, 0, 0, 0);
+        cycleEnd = new Date(year, month, 14, 23, 59, 59, 999);
+    } else if (day <= 29) {
+        // Processing on 30th — cover 15th to 29th
+        cycleStart = new Date(year, month, 15, 0, 0, 0, 0);
+        cycleEnd = new Date(year, month, 29, 23, 59, 59, 999);
+    } else {
+        // Processing after 29th — 30th/31st carry to next cycle
+        // Show earnings from 15th to 29th of current month (for 30th payout)
+        cycleStart = new Date(year, month, 15, 0, 0, 0, 0);
+        cycleEnd = new Date(year, month, 29, 23, 59, 59, 999);
+    }
+
+    return { cycleStart, cycleEnd };
+}
+
 // DASHBOARD STATS
 exports.getDashboard = async (req, res) => {
     try {
@@ -20,7 +50,6 @@ exports.getDashboard = async (req, res) => {
             newDriversMonth,
             totalLogs,
             newLogsToday,
-            videosPending,
             videosVerified,
             videosFailed,
             pendingInstitutions,
@@ -35,7 +64,6 @@ exports.getDashboard = async (req, res) => {
             prisma.driver.count({ where: { createdAt: { gte: thisMonth } } }),
             prisma.accidentLog.count(),
             prisma.accidentLog.count({ where: { createdAt: { gte: today } } }),
-            prisma.accidentLog.count({ where: { videoStatus: 'PENDING' } }),
             prisma.accidentLog.count({ where: { videoStatus: 'VERIFIED' } }),
             prisma.accidentLog.count({ where: { videoStatus: 'FAILED' } }),
             prisma.institutionalUser.count({ where: { isApproved: false } }),
@@ -49,7 +77,7 @@ exports.getDashboard = async (req, res) => {
         res.status(200).json({
             totalDrivers, newDriversToday, newDriversMonth,
             totalLogs, newLogsToday,
-            videos: { pending: videosPending, verified: videosVerified, failed: videosFailed },
+            videos: { verified: videosVerified, failed: videosFailed },
             pendingInstitutions, totalInstitutions, pendingConsents,
             totalRevenue: parseFloat(totalPayments._sum.amount || 0),
             totalAffiliateEarnings: parseFloat(totalAffiliate._sum.amount || 0),
@@ -88,7 +116,7 @@ exports.getWrits = async (req, res) => {
                 id: true, writNumber: true, vehiclePlate: true,
                 latitude: true, longitude: true,
                 roadCondition: true, weatherCondition: true, injuryStatus: true,
-                videoStatus: true, videoHash: true, sealedVideoUrl: true, rawVideoUrl: true,
+                videoStatus: true, videoHash: true, rawVideoUrl: true,
                 videoSealedAt: true, logHash: true, createdAt: true,
                 otherVehiclePlate: true, isReportPaid: true
             }
@@ -96,47 +124,6 @@ exports.getWrits = async (req, res) => {
         res.status(200).json({ count: writs.length, writs });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch writs.' });
-    }
-};
-
-// STREAM SEALED VIDEO
-exports.streamVideo = async (req, res) => {
-    try {
-        const { logHash } = req.params;
-        const { key } = req.query;
-
-        if (key !== process.env.ADMIN_KEY) {
-            return res.status(403).json({ error: 'Unauthorized.' });
-        }
-
-        const log = await prisma.accidentLog.findUnique({
-            where: { logHash },
-            select: { sealedVideoUrl: true, videoStatus: true }
-        });
-
-        if (!log || !log.sealedVideoUrl) {
-            return res.status(404).json({ error: 'Sealed video not found.' });
-        }
-
-        const rangeHeader = req.headers['range'];
-        const axiosConfig = { responseType: 'stream', headers: {} };
-        if (rangeHeader) axiosConfig.headers['Range'] = rangeHeader;
-
-        const response = await axios.get(log.sealedVideoUrl, axiosConfig);
-
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-        res.setHeader('Content-Disposition', `inline; filename="awas-sealed-${logHash.substring(0, 8)}.mp4"`);
-        if (response.headers['content-range']) res.setHeader('Content-Range', response.headers['content-range']);
-        if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.status(response.status);
-        response.data.pipe(res);
-
-    } catch (error) {
-        console.error('AWAS Video Stream Fault:', error);
-        res.status(500).json({ error: 'Video stream failed.' });
     }
 };
 
@@ -169,27 +156,57 @@ exports.getPayments = async (req, res) => {
     }
 };
 
-// ALL AFFILIATES
+// ALL AFFILIATES — full details including due and not due
 exports.getAffiliates = async (req, res) => {
     try {
         const affiliates = await prisma.affiliate.findMany({
-            orderBy: { joinedAt: 'desc' },
+            orderBy: { pendingPayout: 'desc' },
             select: {
                 id: true, referralCode: true, totalReferrals: true,
                 totalEarnings: true, pendingPayout: true, paidOut: true,
                 bankName: true, bankAccountNumber: true, bankAccountName: true,
                 duitnowNumber: true, isActive: true, joinedAt: true,
-                driver: { select: { vehiclePlate: true, phone: true } }
+                driver: { select: { vehiclePlate: true, phone: true } },
+                earnings: {
+                    where: { isPaid: false },
+                    orderBy: { createdAt: 'desc' },
+                    select: {
+                        id: true, referredPlate: true, amount: true,
+                        type: true, createdAt: true
+                    }
+                },
+                payouts: {
+                    orderBy: { createdAt: 'desc' },
+                    take: 5,
+                    select: {
+                        id: true, amount: true, status: true,
+                        method: true, reference: true,
+                        cycleStart: true, cycleEnd: true, processedAt: true
+                    }
+                }
             }
         });
 
-        // Flag payout due
         const affiliatesWithFlag = affiliates.map(a => ({
-            ...a,
-            totalEarnings: parseFloat(a.totalEarnings),
-            pendingPayout: parseFloat(a.pendingPayout),
-            paidOut: parseFloat(a.paidOut),
-            payoutDue: parseFloat(a.pendingPayout) >= PAYOUT_THRESHOLD
+            affiliateId: a.id,
+            referralCode: a.referralCode,
+            vehiclePlate: a.driver.vehiclePlate,
+            phone: a.driver.phone,
+            bankName: a.bankName,
+            bankAccountNumber: a.bankAccountNumber,
+            bankAccountName: a.bankAccountName,
+            duitnowNumber: a.duitnowNumber,
+            isActive: a.isActive,
+            joinedAt: a.joinedAt,
+            stats: {
+                totalReferrals: a.totalReferrals,
+                totalEarnings: parseFloat(a.totalEarnings),
+                pendingPayout: parseFloat(a.pendingPayout),
+                paidOut: parseFloat(a.paidOut),
+                payoutDue: parseFloat(a.pendingPayout) >= PAYOUT_THRESHOLD
+            },
+            unpaidEarnings: a.earnings,
+            recentPayouts: a.payouts
         }));
 
         res.status(200).json({ count: affiliates.length, affiliates: affiliatesWithFlag });
@@ -198,26 +215,33 @@ exports.getAffiliates = async (req, res) => {
     }
 };
 
-// PAYOUT DUE LIST — admin uses this to action iRakyat payments
-// Shows only affiliates who hit RM49.90 threshold
-// Contains all bank details needed for iRakyat transfer in one view
+// PAYOUT DUE LIST — affiliates qualifying for current payment cycle
+// Filters earnings by current cycle date range
+// 1st–14th → processes on 15th
+// 15th–29th → processes on 30th
+// 30th–31st → carry to next month 15th
 exports.getPayoutDue = async (req, res) => {
     try {
-        const affiliatesDue = await prisma.affiliate.findMany({
-            where: {
-                pendingPayout: { gte: PAYOUT_THRESHOLD },
-                isActive: true
-            },
-            orderBy: { pendingPayout: 'desc' },
+        const { cycleStart, cycleEnd } = getCurrentCycleDateRange();
+
+        // Get all active affiliates
+        const allAffiliates = await prisma.affiliate.findMany({
+            where: { isActive: true },
             select: {
-                id: true, referralCode: true,
-                totalReferrals: true, pendingPayout: true,
+                id: true, referralCode: true, totalReferrals: true,
+                pendingPayout: true,
                 bankName: true, bankAccountNumber: true,
                 bankAccountName: true, duitnowNumber: true,
                 joinedAt: true,
                 driver: { select: { vehiclePlate: true, phone: true } },
                 earnings: {
-                    where: { isPaid: false },
+                    where: {
+                        isPaid: false,
+                        createdAt: {
+                            gte: cycleStart,
+                            lte: cycleEnd
+                        }
+                    },
                     select: {
                         id: true, referredPlate: true,
                         amount: true, type: true, createdAt: true
@@ -226,23 +250,31 @@ exports.getPayoutDue = async (req, res) => {
             }
         });
 
-        const payoutList = affiliatesDue.map(a => ({
-            affiliateId: a.id,
-            referralCode: a.referralCode,
-            vehiclePlate: a.driver.vehiclePlate,
-            phone: a.driver.phone,
-            totalReferrals: a.totalReferrals,
-            amountDue: parseFloat(a.pendingPayout),
-            bankName: a.bankName,
-            bankAccountNumber: a.bankAccountNumber,
-            bankAccountName: a.bankAccountName,
-            duitnowNumber: a.duitnowNumber,
-            unpaidEarnings: a.earnings,
-            joinedAt: a.joinedAt
-        }));
+        // Calculate cycle earnings per affiliate
+        // Qualify only if total pendingPayout >= threshold (includes carry-forward)
+        const payoutList = allAffiliates
+            .filter(a => parseFloat(a.pendingPayout) >= PAYOUT_THRESHOLD)
+            .map(a => ({
+                affiliateId: a.id,
+                referralCode: a.referralCode,
+                vehiclePlate: a.driver.vehiclePlate,
+                phone: a.driver.phone,
+                totalReferrals: a.totalReferrals,
+                amountDue: parseFloat(a.pendingPayout),
+                cycleEarnings: a.earnings.reduce((sum, e) => sum + parseFloat(e.amount), 0),
+                bankName: a.bankName,
+                bankAccountNumber: a.bankAccountNumber,
+                bankAccountName: a.bankAccountName,
+                duitnowNumber: a.duitnowNumber,
+                cycleUnpaidEarnings: a.earnings,
+                joinedAt: a.joinedAt
+            }))
+            .sort((a, b) => b.amountDue - a.amountDue);
 
         res.status(200).json({
             count: payoutList.length,
+            cycleStart,
+            cycleEnd,
             totalPayoutAmount: payoutList.reduce((sum, a) => sum + a.amountDue, 0).toFixed(2),
             payoutDates: 'Every 15th and 30th of the month',
             payouts: payoutList
@@ -276,7 +308,9 @@ exports.markPayoutDone = async (req, res) => {
             return res.status(400).json({ error: `Pending payout RM${payoutAmount} below threshold RM${PAYOUT_THRESHOLD}.` });
         }
 
-        // Create payout record
+        const { cycleStart, cycleEnd } = getCurrentCycleDateRange();
+
+        // Create payout record with cycle dates
         await prisma.affiliatePayout.create({
             data: {
                 affiliateId: parseInt(affiliateId),
@@ -284,6 +318,8 @@ exports.markPayoutDone = async (req, res) => {
                 status: 'PAID',
                 method: affiliate.duitnowNumber ? 'DuitNow' : 'IBG',
                 reference: reference || null,
+                cycleStart,
+                cycleEnd,
                 processedAt: new Date()
             }
         });
@@ -303,11 +339,13 @@ exports.markPayoutDone = async (req, res) => {
             }
         });
 
-        console.log(`AWAS Admin: Payout RM${payoutAmount} marked done for affiliate ${affiliateId}`);
+        console.log(`AWAS Admin: Payout RM${payoutAmount} marked done for affiliate ${affiliateId}. Cycle: ${cycleStart.toDateString()} - ${cycleEnd.toDateString()}`);
 
         return res.status(200).json({
             message: `Payout RM${payoutAmount.toFixed(2)} marked as paid for affiliate ${affiliateId}.`,
-            reference: reference || null
+            reference: reference || null,
+            cycleStart,
+            cycleEnd
         });
 
     } catch (error) {
@@ -373,7 +411,7 @@ exports.getVerificationRequests = async (req, res) => {
                 requesterType: true, caseReferenceNo: true,
                 approvalStatus: true, driverApprovedAt: true,
                 isPaymentSettled: true, createdAt: true,
-                accidentLog: { select: { writNumber: true, vehiclePlate: true, sealedVideoUrl: true } }
+                accidentLog: { select: { writNumber: true, vehiclePlate: true, rawVideoUrl: true } }
             }
         });
         res.status(200).json({ count: requests.length, requests });

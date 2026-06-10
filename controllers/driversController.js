@@ -64,7 +64,7 @@ exports.registerDriver = async (req, res) => {
             if (!existing) isUnique = true;
         }
 
-        // Register driver with PENDING status — activated after payment confirmed
+        // Register driver with EXPIRED status — activated after payment confirmed
         const userProfile = await prisma.driver.upsert({
             where: { vehiclePlate: normalizedPlate },
             update: {
@@ -141,6 +141,8 @@ exports.loginDriver = async (req, res) => {
             vehicleMakeModel: driver.vehicleMakeModel,
             vehicleType: driver.vehicleType,
             mykadLastFour: driver.mykadLastFour,
+            phone: driver.phone || null,
+            subExpiresAt: driver.subExpiresAt,
             referralCode: driver.referralCode
         });
 
@@ -306,19 +308,14 @@ exports.deleteAccount = async (req, res) => {
             });
         }
 
-        // ── STEP 4: Disconnect logs from driver via vehiclePlate ─────────
-        // AccidentLog relation is via vehiclePlate — logs stay anonymised
-        // We delete the driver record — logs remain with vehiclePlate as orphan string
+        // ── STEP 4: Delete affiliate, payments, driver ───────────────────
         if (driver.affiliate) {
             await prisma.affiliateEarning.deleteMany({ where: { affiliateId: driver.affiliate.id } });
             await prisma.affiliatePayout.deleteMany({ where: { affiliateId: driver.affiliate.id } });
             await prisma.affiliate.delete({ where: { id: driver.affiliate.id } });
         }
 
-        // Delete payments for this plate
         await prisma.payment.deleteMany({ where: { vehiclePlate: plate } });
-
-        // Delete driver record
         await prisma.driver.delete({ where: { vehiclePlate: plate } });
 
         console.log(`AWAS Account Deleted: ${plate}`);

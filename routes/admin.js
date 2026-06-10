@@ -6,10 +6,7 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const adminAuth = require('../middleware/adminAuth');
 
-// Video route — BEFORE adminAuth (browser video tag cannot send headers)
-router.get('/video/:logHash', adminController.streamVideo);
-
-// All other routes protected by adminAuth
+// All routes protected by adminAuth
 router.use(adminAuth);
 
 router.get('/dashboard', adminController.getDashboard);
