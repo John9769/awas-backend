@@ -32,7 +32,7 @@ exports.registerDriver = async (req, res) => {
         if (!consentGiven) {
             return res.status(400).json({ error: "PDPA Consent Mandatory." });
         }
-        if (!vehiclePlate || !vehicleMakeModel || !mykadLastFour) {
+        if (!vehiclePlate || !vehicleMakeModel || !mykadLastFour || !phone) {
             return res.status(400).json({ error: "Missing required fields." });
         }
         if (!/^\d{4}$/.test(mykadLastFour)) {
@@ -71,7 +71,7 @@ exports.registerDriver = async (req, res) => {
                 vehicleMakeModel,
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
-                phone: phone || null,
+                phone: phone,
                 passwordHash
             },
             create: {
@@ -79,7 +79,7 @@ exports.registerDriver = async (req, res) => {
                 vehicleMakeModel,
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
-                phone: phone || null,
+                phone: phone,
                 passwordHash,
                 subStatus: 'EXPIRED',
                 subExpiresAt: new Date(),
