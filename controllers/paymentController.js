@@ -229,24 +229,39 @@ exports.createRegistrationBill = async (req, res) => {
 // status_id: 1 = success, 2 = pending, 3 = failed
 exports.handleWebhook = async (req, res) => {
     try {
-        const { refno, status_id, billcode } = req.body;
+        // ToyyibPay posts form-encoded data. Read defensively so an empty or
+        // unparsed body never crashes the handler.
+        // (Previous bug: destructuring refno from undefined req.body threw a
+        // TypeError, which killed activation for paid drivers.)
+        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+
+        // Log the raw body so we can see EXACTLY what ToyyibPay sends.
+        console.log('AWAS Webhook RAW body:', JSON.stringify(body));
+
+        const refno = body.refno;
+        const status_id = body.status_id;
+        const billcode = body.billcode;
 
         console.log(`AWAS ToyyibPay Webhook: refno=${refno} status_id=${status_id} billcode=${billcode}`);
 
+        // Always answer 200 to ToyyibPay so it does not keep retrying,
+        // even when we can't act on the payload.
         if (!refno || !status_id) {
-            return res.status(400).json({ error: 'Missing webhook parameters.' });
+            console.error('AWAS Webhook: missing refno or status_id in body.');
+            return res.status(200).json({ message: 'Missing webhook parameters — ignored.' });
         }
 
         const paymentId = parseInt(refno);
         if (isNaN(paymentId)) {
-            return res.status(400).json({ error: 'Invalid reference number.' });
+            console.error(`AWAS Webhook: invalid refno=${refno}`);
+            return res.status(200).json({ message: 'Invalid reference number — ignored.' });
         }
 
         const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
 
         if (!payment) {
             console.error(`AWAS Webhook: Payment not found for refno=${refno}`);
-            return res.status(404).json({ error: 'Payment not found.' });
+            return res.status(200).json({ message: 'Payment not found — ignored.' });
         }
 
         // Handle pending
@@ -337,7 +352,8 @@ exports.handleWebhook = async (req, res) => {
 
     } catch (err) {
         console.error('AWAS Webhook fault:', err);
-        return res.status(500).json({ error: 'Webhook processing error.' });
+        // Still answer 200 so ToyyibPay does not hammer retries on a server error.
+        return res.status(200).json({ message: 'Webhook error logged.' });
     }
 };
 
