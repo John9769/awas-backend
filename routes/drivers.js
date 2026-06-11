@@ -5,10 +5,10 @@ const express = require('express');
 const router = express.Router();
 const driversController = require('../controllers/driversController');
 
-// Register driver
-router.post('/register', driversController.registerDriver);
+// NOTE: /register route removed.
+// Registration is handled by POST /api/payment/register
 
-// Lookup driver by plate (for login)
+// Lookup driver by plate
 router.get('/lookup/:plate', driversController.lookupDriver);
 
 // Driver login (plate + password)

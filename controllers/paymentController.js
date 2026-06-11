@@ -4,6 +4,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const axios = require('axios');
+const bcrypt = require('bcrypt');
 const { creditAffiliateEarning } = require('./affiliateController');
 
 const REGISTRATION_FEE = 29.99;
@@ -11,8 +12,22 @@ const WRIT_FEE = 8.00;
 const AFFILIATE_CUT = 4.99;
 const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://toyyibpay.com';
 
+// ─── HELPER: Generate unique 8-char referral code ────────────────────────────
+async function generateUniqueReferralCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code, exists;
+    do {
+        code = 'AWAS';
+        for (let i = 0; i < 4; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        exists = await prisma.driver.findUnique({ where: { referralCode: code } });
+    } while (exists);
+    return code;
+}
+
 // ─── HELPER: Create ToyyibPay Bill ───────────────────────────────────────────
-const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billEmail, billPhone }) => {
+const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billPhone }) => {
     const params = new URLSearchParams();
     params.append('userSecretKey', process.env.TOYYIBPAY_SECRET_KEY);
     params.append('categoryCode', process.env.TOYYIBPAY_CATEGORY_CODE);
@@ -25,8 +40,7 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('billCallbackUrl', `${process.env.BE_URL}/api/payment/webhook`);
     params.append('billExternalReferenceNo', String(billExternalReferenceNo));
     params.append('billTo', billTo || '');
-    params.append('billEmail', billEmail || '');
-    params.append('billPhone', billPhone || '');
+    if (billPhone) params.append('billPhone', billPhone);
     params.append('billSplitPayment', '0');
     params.append('billSplitPaymentArgs', '');
     params.append('billPaymentChannel', '0');
@@ -49,46 +63,117 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     return response.data[0].BillCode;
 };
 
-// ─── CREATE REGISTRATION BILL ────────────────────────────────────────────────
+// ─── CREATE REGISTRATION BILL ─────────────────────────────────────────────────
+// This is the SINGLE endpoint for registration.
+// Driver is created here. If ToyyibPay fails, driver + payment are rolled back.
+// No orphaned records possible.
 exports.createRegistrationBill = async (req, res) => {
+    const plate = (req.body.vehiclePlate || '').toUpperCase().replace(/\s+/g, '');
+    let driverCreated = false;
+    let paymentId = null;
+
     try {
-        const { vehiclePlate, referralCode } = req.body;
+        const {
+            vehicleMakeModel,
+            vehicleType,
+            mykadLastFour,
+            phone,
+            password,
+            consentGiven,
+            referredByCode
+        } = req.body;
 
-        if (!vehiclePlate) {
-            return res.status(400).json({ error: 'Nombor plat diperlukan.' });
+        // ── Validate all inputs ───────────────────────────────────────────
+        if (!consentGiven) {
+            return res.status(400).json({ error: 'PDPA Consent Mandatory.' });
+        }
+        if (!plate || !vehicleMakeModel || !mykadLastFour || !phone || !password) {
+            return res.status(400).json({ error: 'Missing required fields.' });
+        }
+        if (!/^\d{4}$/.test(mykadLastFour)) {
+            return res.status(400).json({ error: 'Invalid MyKad input. Last 4 digits only.' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Kata laluan diperlukan (minimum 6 aksara).' });
+        }
+        if (vehicleType && !['CAR', 'MOTORCYCLE', 'LORRY', 'BUS', 'VAN'].includes(vehicleType)) {
+            return res.status(400).json({ error: 'Invalid vehicle type.' });
         }
 
-        const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
+        // ── Check if plate already registered and active ──────────────────
+        const existing = await prisma.driver.findUnique({ where: { vehiclePlate: plate } });
+        if (existing && existing.subStatus === 'ACTIVE') {
+            return res.status(409).json({ error: 'Plat kenderaan ini sudah berdaftar dan aktif. Sila log masuk.' });
+        }
 
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: plate }
+        // ── Validate referral code ────────────────────────────────────────
+        let validReferralCode = null;
+        if (referredByCode) {
+            const referrer = await prisma.driver.findUnique({
+                where: { referralCode: referredByCode.toUpperCase() }
+            });
+            if (referrer) validReferralCode = referredByCode.toUpperCase();
+        }
+
+        // ── Hash password ─────────────────────────────────────────────────
+        const passwordHash = await bcrypt.hash(password, 12);
+
+        // ── Generate unique referral code ─────────────────────────────────
+        const newReferralCode = await generateUniqueReferralCode();
+
+        // ── STEP 1: Create driver as EXPIRED ──────────────────────────────
+        // If driver already exists (previous failed attempt) — update record
+        await prisma.driver.upsert({
+            where: { vehiclePlate: plate },
+            update: {
+                vehicleMakeModel,
+                vehicleType: vehicleType || 'CAR',
+                mykadLastFour,
+                phone,
+                passwordHash,
+                subStatus: 'EXPIRED',
+                subExpiresAt: new Date()
+            },
+            create: {
+                vehiclePlate: plate,
+                vehicleMakeModel,
+                vehicleType: vehicleType || 'CAR',
+                mykadLastFour,
+                phone,
+                passwordHash,
+                subStatus: 'EXPIRED',
+                subExpiresAt: new Date(),
+                referralCode: newReferralCode,
+                referredByCode: validReferralCode
+            }
         });
+        driverCreated = true;
 
-        if (!driver) {
-            return res.status(404).json({ error: 'Akaun AWAS tidak dijumpai.' });
-        }
-
+        // ── STEP 2: Create payment record ─────────────────────────────────
         const payment = await prisma.payment.create({
             data: {
                 vehiclePlate: plate,
                 amount: REGISTRATION_FEE,
                 type: 'REGISTRATION',
                 status: 'PENDING',
-                referralCode: referralCode || null,
-                affiliateCut: referralCode ? AFFILIATE_CUT : null
+                referralCode: validReferralCode || null,
+                affiliateCut: validReferralCode ? AFFILIATE_CUT : null
             }
         });
+        paymentId = payment.id;
 
+        // ── STEP 3: Create ToyyibPay bill ─────────────────────────────────
+        // If this fails, we roll back driver + payment in the catch block
         const billCode = await createToyyibpayBill({
             billName: `AWAS-REG-${plate}`,
             billDescription: `AWAS Annual Protection - ${plate}`,
             billAmount: REGISTRATION_FEE,
             billExternalReferenceNo: payment.id,
             billTo: plate,
-            billEmail: '',
-            billPhone: driver.phone || ''
+            billPhone: phone || ''
         });
 
+        // ── STEP 4: Update payment with bill code ─────────────────────────
         await prisma.payment.update({
             where: { id: payment.id },
             data: {
@@ -96,6 +181,8 @@ exports.createRegistrationBill = async (req, res) => {
                 toyyibpayUrl: `${TOYYIBPAY_BASE_URL}/${billCode}`
             }
         });
+
+        console.log(`AWAS: Registration bill created for ${plate}. BillCode: ${billCode}`);
 
         return res.status(201).json({
             paymentId: payment.id,
@@ -106,22 +193,29 @@ exports.createRegistrationBill = async (req, res) => {
 
     } catch (err) {
         console.error('Create registration bill fault:', err);
-        return res.status(500).json({ error: 'Ralat semasa mencipta bil pembayaran.' });
+
+        // ── ROLLBACK: If ToyyibPay failed, clean up driver + payment ──────
+        try {
+            if (paymentId) {
+                await prisma.payment.delete({ where: { id: paymentId } });
+            }
+            if (driverCreated) {
+                await prisma.driver.delete({ where: { vehiclePlate: plate } });
+            }
+            console.log(`AWAS: Rolled back driver + payment for ${plate}`);
+        } catch (rollbackErr) {
+            console.error('AWAS Rollback fault:', rollbackErr);
+        }
+
+        return res.status(500).json({ error: 'Ralat semasa mencipta bil pembayaran. Sila cuba lagi.' });
     }
 };
 
 // ─── TOYYIBPAY WEBHOOK ───────────────────────────────────────────────────────
-// ToyyibPay POSTs form-encoded data to this endpoint after payment
 // status_id: 1 = success, 2 = pending, 3 = failed
 exports.handleWebhook = async (req, res) => {
     try {
-        const {
-            refno,
-            status_id,
-            billcode,
-            amount,
-            transaction_id
-        } = req.body;
+        const { refno, status_id, billcode } = req.body;
 
         console.log(`AWAS ToyyibPay Webhook: refno=${refno} status_id=${status_id} billcode=${billcode}`);
 
@@ -134,9 +228,7 @@ exports.handleWebhook = async (req, res) => {
             return res.status(400).json({ error: 'Invalid reference number.' });
         }
 
-        const payment = await prisma.payment.findUnique({
-            where: { id: paymentId }
-        });
+        const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
 
         if (!payment) {
             console.error(`AWAS Webhook: Payment not found for refno=${refno}`);
@@ -145,7 +237,6 @@ exports.handleWebhook = async (req, res) => {
 
         // Handle pending
         if (status_id === '2' || status_id === 2) {
-            console.log(`AWAS Webhook: Payment pending for paymentId=${paymentId}`);
             if (!payment.toyyibpayBillCode && billcode) {
                 await prisma.payment.update({
                     where: { id: paymentId },
@@ -157,7 +248,6 @@ exports.handleWebhook = async (req, res) => {
 
         // Handle failed
         if (status_id === '3' || status_id === 3) {
-            console.log(`AWAS Webhook: Payment failed for paymentId=${paymentId}`);
             await prisma.payment.update({
                 where: { id: paymentId },
                 data: { status: 'FAILED' }
@@ -170,7 +260,6 @@ exports.handleWebhook = async (req, res) => {
 
             // Idempotency
             if (payment.status === 'PAID') {
-                console.log(`AWAS Webhook: Already processed paymentId=${paymentId}`);
                 return res.status(200).json({ message: 'Already processed.' });
             }
 
@@ -184,7 +273,7 @@ exports.handleWebhook = async (req, res) => {
                 }
             });
 
-            // Handle REGISTRATION — activate driver + credit affiliate
+            // Handle REGISTRATION / RENEWAL — activate driver
             if (payment.type === 'REGISTRATION' || payment.type === 'RENEWAL') {
                 const expiryDate = new Date();
                 expiryDate.setFullYear(expiryDate.getFullYear() + 1);
@@ -210,7 +299,6 @@ exports.handleWebhook = async (req, res) => {
 
             // Handle WRIT — unlock PDF paywall
             if (payment.type === 'WRIT') {
-                // Find the most recent unpaid writ for this plate
                 const log = await prisma.accidentLog.findFirst({
                     where: {
                         vehiclePlate: payment.vehiclePlate,
@@ -231,7 +319,6 @@ exports.handleWebhook = async (req, res) => {
             return res.status(200).json({ message: 'Payment processed successfully.' });
         }
 
-        console.warn(`AWAS Webhook: Unknown status_id=${status_id}`);
         return res.status(200).json({ message: 'Unknown status ignored.' });
 
     } catch (err) {
@@ -251,9 +338,7 @@ exports.createWritBill = async (req, res) => {
 
         const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
 
-        const driver = await prisma.driver.findUnique({
-            where: { vehiclePlate: plate }
-        });
+        const driver = await prisma.driver.findUnique({ where: { vehiclePlate: plate } });
 
         if (!driver) {
             return res.status(404).json({ error: 'Akaun AWAS tidak dijumpai.' });
@@ -268,15 +353,22 @@ exports.createWritBill = async (req, res) => {
             }
         });
 
-        const billCode = await createToyyibpayBill({
-            billName: `AWAS-WRIT-${plate}`,
-            billDescription: `AWAS Digital Writ Report - ${logHash.substring(0, 8)}`,
-            billAmount: WRIT_FEE,
-            billExternalReferenceNo: payment.id,
-            billTo: plate,
-            billEmail: '',
-            billPhone: driver.phone || ''
-        });
+        let billCode;
+        try {
+            billCode = await createToyyibpayBill({
+                billName: `AWAS-WRIT-${plate}`,
+                billDescription: `AWAS Digital Writ Report - ${logHash.substring(0, 8)}`,
+                billAmount: WRIT_FEE,
+                billExternalReferenceNo: payment.id,
+                billTo: plate,
+                billPhone: driver.phone || ''
+            });
+        } catch (toyyibErr) {
+            // Rollback payment record if ToyyibPay fails
+            await prisma.payment.delete({ where: { id: payment.id } });
+            console.error('Create writ bill ToyyibPay fault:', toyyibErr);
+            return res.status(500).json({ error: 'Ralat semasa mencipta bil writ. Sila cuba lagi.' });
+        }
 
         await prisma.payment.update({
             where: { id: payment.id },
