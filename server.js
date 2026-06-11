@@ -3,15 +3,9 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 
 const app = express();
-
-// Trust Render's proxy — REQUIRED for express-rate-limit to read the real
-// visitor address correctly. Without this, the rate limiter throws an error
-// and blocks driver login. Render (and most hosts) sit behind one proxy layer.
 app.set('trust proxy', 1);
-
 const PORT = process.env.PORT || 5000;
 
 // Security headers
@@ -45,13 +39,6 @@ app.use(express.json());
 // URL-encoded body parser — required for ToyyibPay webhook callbacks
 app.use(express.urlencoded({ extended: true }));
 
-// Brute force protection on auth endpoints
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    message: { error: 'Too many attempts. Try again in 15 minutes.' }
-});
-
 // Routes
 const driverRoutes = require('./routes/drivers');
 const logRoutes = require('./routes/logs');
@@ -62,12 +49,10 @@ const affiliateRoutes = require('./routes/affiliate');
 const paymentRoutes = require('./routes/payment');
 const mapRoutes = require('./routes/maps');
 
-app.use('/api/drivers/login', authLimiter);
-app.use('/api/drivers/reset-password', authLimiter);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/institutions', institutionRoutes);
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/payment', paymentRoutes);
