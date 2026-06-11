@@ -60,6 +60,7 @@ exports.loginDriver = async (req, res) => {
             vehicleType: driver.vehicleType,
             mykadLastFour: driver.mykadLastFour,
             phone: driver.phone || null,
+            email: driver.email || null,
             subExpiresAt: driver.subExpiresAt,
             referralCode: driver.referralCode
         });

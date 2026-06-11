@@ -86,6 +86,7 @@ model Driver {
   vehicleType      VehicleType   @default(CAR) @map("vehicle_type")
   mykadLastFour    String        @map("mykad_last_four")
   phone            String        @map("phone")
+  email            String?       @map("email")
   passwordHash     String?       @map("password_hash")
   subStatus        SubStatus     @default(EXPIRED) @map("sub_status")
   subExpiresAt     DateTime      @map("sub_expires_at")

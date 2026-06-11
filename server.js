@@ -56,6 +56,8 @@ const affiliateRoutes = require('./routes/affiliate');
 const paymentRoutes = require('./routes/payment');
 const mapRoutes = require('./routes/maps');
 
+app.use('/api/drivers/login', authLimiter);
+app.use('/api/drivers/reset-password', authLimiter);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/institutions', institutionRoutes);

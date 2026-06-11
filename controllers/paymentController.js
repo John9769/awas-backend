@@ -11,6 +11,7 @@ const REGISTRATION_FEE = 29.99;
 const WRIT_FEE = 8.00;
 const AFFILIATE_CUT = 4.99;
 const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://toyyibpay.com';
+const FALLBACK_EMAIL = 'noreply@awas.asia';
 
 // ─── HELPER: Generate unique 8-char referral code ────────────────────────────
 async function generateUniqueReferralCode() {
@@ -27,7 +28,10 @@ async function generateUniqueReferralCode() {
 }
 
 // ─── HELPER: Create ToyyibPay Bill ───────────────────────────────────────────
-const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billPhone }) => {
+// billEmail is MANDATORY for ToyyibPay when billPayorInfo=1.
+// Empty OR missing billEmail = createBill fails ("billEmail parameter is empty").
+// Always pass a valid email; caller falls back to noreply@awas.asia if none.
+const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billEmail, billPhone }) => {
     const params = new URLSearchParams();
     params.append('userSecretKey', process.env.TOYYIBPAY_SECRET_KEY);
     params.append('categoryCode', process.env.TOYYIBPAY_CATEGORY_CODE);
@@ -40,6 +44,7 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('billCallbackUrl', `${process.env.BE_URL}/api/payment/webhook`);
     params.append('billExternalReferenceNo', String(billExternalReferenceNo));
     params.append('billTo', billTo || '');
+    params.append('billEmail', billEmail && billEmail.trim() ? billEmail.trim() : FALLBACK_EMAIL);
     if (billPhone) params.append('billPhone', billPhone);
     params.append('billSplitPayment', '0');
     params.append('billSplitPaymentArgs', '');
@@ -78,6 +83,7 @@ exports.createRegistrationBill = async (req, res) => {
             vehicleType,
             mykadLastFour,
             phone,
+            email,
             password,
             consentGiven,
             referredByCode
@@ -87,11 +93,14 @@ exports.createRegistrationBill = async (req, res) => {
         if (!consentGiven) {
             return res.status(400).json({ error: 'PDPA Consent Mandatory.' });
         }
-        if (!plate || !vehicleMakeModel || !mykadLastFour || !phone || !password) {
+        if (!plate || !vehicleMakeModel || !mykadLastFour || !phone || !email || !password) {
             return res.status(400).json({ error: 'Missing required fields.' });
         }
         if (!/^\d{4}$/.test(mykadLastFour)) {
             return res.status(400).json({ error: 'Invalid MyKad input. Last 4 digits only.' });
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({ error: 'Alamat emel tidak sah.' });
         }
         if (password.length < 6) {
             return res.status(400).json({ error: 'Kata laluan diperlukan (minimum 6 aksara).' });
@@ -99,6 +108,8 @@ exports.createRegistrationBill = async (req, res) => {
         if (vehicleType && !['CAR', 'MOTORCYCLE', 'LORRY', 'BUS', 'VAN'].includes(vehicleType)) {
             return res.status(400).json({ error: 'Invalid vehicle type.' });
         }
+
+        const cleanEmail = email.trim().toLowerCase();
 
         // ── Check if plate already registered and active ──────────────────
         const existing = await prisma.driver.findUnique({ where: { vehiclePlate: plate } });
@@ -130,6 +141,7 @@ exports.createRegistrationBill = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone,
+                email: cleanEmail,
                 passwordHash,
                 subStatus: 'EXPIRED',
                 subExpiresAt: new Date()
@@ -140,6 +152,7 @@ exports.createRegistrationBill = async (req, res) => {
                 vehicleType: vehicleType || 'CAR',
                 mykadLastFour,
                 phone,
+                email: cleanEmail,
                 passwordHash,
                 subStatus: 'EXPIRED',
                 subExpiresAt: new Date(),
@@ -170,6 +183,7 @@ exports.createRegistrationBill = async (req, res) => {
             billAmount: REGISTRATION_FEE,
             billExternalReferenceNo: payment.id,
             billTo: plate,
+            billEmail: cleanEmail,
             billPhone: phone || ''
         });
 
@@ -361,6 +375,7 @@ exports.createWritBill = async (req, res) => {
                 billAmount: WRIT_FEE,
                 billExternalReferenceNo: payment.id,
                 billTo: plate,
+                billEmail: driver.email || '',
                 billPhone: driver.phone || ''
             });
         } catch (toyyibErr) {

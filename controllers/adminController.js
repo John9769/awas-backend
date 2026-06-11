@@ -98,7 +98,8 @@ exports.getUsers = async (req, res) => {
             select: {
                 id: true, vehiclePlate: true, vehicleMakeModel: true,
                 vehicleType: true, subStatus: true, subExpiresAt: true,
-                referralCode: true, referredByCode: true, phone: true, createdAt: true
+                referralCode: true, referredByCode: true, phone: true,
+                email: true, createdAt: true
             }
         });
         res.status(200).json({ count: users.length, users });
