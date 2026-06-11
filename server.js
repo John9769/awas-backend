@@ -6,6 +6,12 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+
+// Trust Render's proxy — REQUIRED for express-rate-limit to read the real
+// visitor address correctly. Without this, the rate limiter throws an error
+// and blocks driver login. Render (and most hosts) sit behind one proxy layer.
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 5000;
 
 // Security headers
