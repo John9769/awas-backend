@@ -197,6 +197,57 @@ exports.verifyAndSeal = async (req, res) => {
     }
 };
 
+// ─── GET WRIT BY NUMBER (RM8 PAYWALL RESUME) ─────────────────────────────────
+// Used by FE after returning from ToyyibPay for the RM8 writ-PDF purchase.
+// - If not found: 404.
+// - If isReportPaid is false: return ONLY { isReportPaid: false } so FE can
+//   keep polling without leaking full hashes (paywall integrity).
+// - If isReportPaid is true: return full data needed to rebuild the report
+//   screen and regenerate the PDF with unmasked hashes.
+exports.getWritByNumber = async (req, res) => {
+    try {
+        const { writNumber } = req.params;
+
+        if (!writNumber) {
+            return res.status(400).json({ error: "Writ number diperlukan." });
+        }
+
+        const log = await prisma.accidentLog.findFirst({
+            where: { writNumber }
+        });
+
+        if (!log) {
+            return res.status(404).json({ error: "Writ tidak dijumpai." });
+        }
+
+        if (!log.isReportPaid) {
+            return res.status(200).json({ isReportPaid: false });
+        }
+
+        return res.status(200).json({
+            isReportPaid: true,
+            writNumber: log.writNumber,
+            logHash: log.logHash,
+            videoHash: log.videoHash,
+            imageHashes: log.imageHashes || [],
+            latitude: log.latitude,
+            longitude: log.longitude,
+            incidentDescription: log.incidentDescription,
+            roadCondition: log.roadCondition,
+            weatherCondition: log.weatherCondition,
+            injuryStatus: log.injuryStatus,
+            otherVehiclePlate: log.otherVehiclePlate,
+            otherVehicleMakeModel: log.otherVehicleMakeModel,
+            vehiclePlate: log.vehiclePlate,
+            createdAt: log.createdAt
+        });
+
+    } catch (error) {
+        console.error("AWAS getWritByNumber Fault:", error);
+        return res.status(500).json({ error: "Ralat semasa mengambil writ." });
+    }
+};
+
 // ─── CLEAR PAYWALL ───────────────────────────────────────────────────────────
 exports.clearPaywall = async (req, res) => {
     try {

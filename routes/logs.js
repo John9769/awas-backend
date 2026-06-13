@@ -21,5 +21,6 @@ const evidenceUpload = upload.fields([
 
 router.post('/verify-seal', evidenceUpload, logsController.verifyAndSeal);
 router.post('/paywall-clear', logsController.clearPaywall);
+router.get('/writ/:writNumber', logsController.getWritByNumber);
 
 module.exports = router;

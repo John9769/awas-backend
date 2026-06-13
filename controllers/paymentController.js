@@ -31,7 +31,12 @@ async function generateUniqueReferralCode() {
 // billEmail is MANDATORY for ToyyibPay when billPayorInfo=1.
 // Empty OR missing billEmail = createBill fails ("billEmail parameter is empty").
 // Always pass a valid email; caller falls back to noreply@awas.asia if none.
-const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billEmail, billPhone }) => {
+//
+// billReturnUrl is optional. If not provided, defaults to the registration
+// flow's return target (login.html?payment=success). Callers with a
+// different post-payment destination (e.g. the RM8 writ paywall, which must
+// return to app.html so the report screen can resume) pass their own.
+const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billEmail, billPhone, billReturnUrl }) => {
     const params = new URLSearchParams();
     params.append('userSecretKey', process.env.TOYYIBPAY_SECRET_KEY);
     params.append('categoryCode', process.env.TOYYIBPAY_CATEGORY_CODE);
@@ -40,7 +45,7 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
     params.append('billPriceSetting', '1');
     params.append('billPayorInfo', '1');
     params.append('billAmount', String(Math.round(billAmount * 100)));
-    params.append('billReturnUrl', `${process.env.FE_URL}/login.html?payment=success`);
+    params.append('billReturnUrl', billReturnUrl || `${process.env.FE_URL}/login.html?payment=success`);
     params.append('billCallbackUrl', `${process.env.BE_URL}/api/payment/webhook`);
     params.append('billExternalReferenceNo', String(billExternalReferenceNo));
     params.append('billTo', billTo || '');
@@ -358,12 +363,18 @@ exports.handleWebhook = async (req, res) => {
 };
 
 // ─── CREATE WRIT BILL (RM8) ──────────────────────────────────────────────────
+// Requires vehiclePlate, logHash, AND writNumber.
+// writNumber is not used by ToyyibPay itself — it is embedded into
+// billReturnUrl so that when ToyyibPay redirects the browser back to
+// app.html, the frontend knows exactly which writ to poll/fetch and resume.
+// Without it the return trip has no way to identify which report to unlock,
+// so it is required and rejected with 400 if missing — same as plate/hash.
 exports.createWritBill = async (req, res) => {
     try {
-        const { vehiclePlate, logHash } = req.body;
+        const { vehiclePlate, logHash, writNumber } = req.body;
 
-        if (!vehiclePlate || !logHash) {
-            return res.status(400).json({ error: 'Nombor plat dan log hash diperlukan.' });
+        if (!vehiclePlate || !logHash || !writNumber) {
+            return res.status(400).json({ error: 'Nombor plat, log hash dan nombor writ diperlukan.' });
         }
 
         const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
@@ -383,6 +394,8 @@ exports.createWritBill = async (req, res) => {
             }
         });
 
+        const writReturnUrl = `${process.env.FE_URL}/app.html?writ_paid=1&writ=${encodeURIComponent(writNumber)}`;
+
         let billCode;
         try {
             billCode = await createToyyibpayBill({
@@ -392,7 +405,8 @@ exports.createWritBill = async (req, res) => {
                 billExternalReferenceNo: payment.id,
                 billTo: plate,
                 billEmail: driver.email || '',
-                billPhone: driver.phone || ''
+                billPhone: driver.phone || '',
+                billReturnUrl: writReturnUrl
             });
         } catch (toyyibErr) {
             // Rollback payment record if ToyyibPay fails
