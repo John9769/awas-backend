@@ -394,7 +394,7 @@ exports.createWritBill = async (req, res) => {
             }
         });
 
-        const writReturnUrl = `${process.env.FE_URL}/app.html?writ_paid=1&writ=${encodeURIComponent(writNumber)}`;
+        const writReturnUrl = `${process.env.FE_URL}/app.html`;
 
         let billCode;
         try {

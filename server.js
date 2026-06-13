@@ -3,6 +3,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const qs = require('qs');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -33,6 +34,31 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
 }));
 
+// ─── TOYYIBPAY WEBHOOK — RAW BODY PARSER ─────────────────────────────────────
+// Registered BEFORE the global JSON/urlencoded parsers and BEFORE the
+// payment route mount. ToyyibPay's callback has been observed arriving with
+// req.body = {} under express.urlencoded(), regardless of Content-Type.
+// This route-specific raw parser captures the exact byte stream ToyyibPay
+// sends, then manually parses it as urlencoded form data via `qs`, so the
+// webhook handler always receives the real refno/status_id/billcode values.
+const paymentController = require('./controllers/paymentController');
+app.post(
+    '/api/payment/webhook',
+    express.raw({ type: '*/*' }),
+    (req, res, next) => {
+        try {
+            const rawString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
+            console.log('AWAS Webhook RAW bytes:', rawString);
+            req.body = qs.parse(rawString);
+        } catch (parseErr) {
+            console.error('AWAS Webhook raw-parse fault:', parseErr);
+            req.body = {};
+        }
+        next();
+    },
+    paymentController.handleWebhook
+);
+
 // JSON body parser
 app.use(express.json());
 
@@ -55,6 +81,11 @@ app.use('/api/institutions', institutionRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
+// Note: /api/payment/webhook is already handled above by the raw-body
+// route registered before this mount. Express matches the more specific
+// route registered first, so the webhook POST never reaches paymentRoutes'
+// own /webhook handler — but the rest of paymentRoutes (/register, /writ,
+// /status/:id) mount normally here.
 app.use('/api/payment', paymentRoutes);
 app.use('/api/maps', mapRoutes);
 
