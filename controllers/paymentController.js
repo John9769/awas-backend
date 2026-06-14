@@ -5,7 +5,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const axios = require('axios');
 const bcrypt = require('bcrypt');
-const formidable = require('formidable');
+const { formidable } = require('formidable');
 const { creditAffiliateEarning } = require('./affiliateController');
 
 const REGISTRATION_FEE = 29.99;
