@@ -28,19 +28,6 @@ const uploadBufferToCloudinary = (buffer, options) => {
 };
 
 // ─── VERIFY & SEAL ───────────────────────────────────────────────────────────
-// Pipeline:
-//   1. Validate inputs
-//   2. Verify driver is paid + active
-//   3. SHA-256 video buffer
-//   4. SHA-256 each image buffer (up to 4)
-//   5. Upload video to awas/raw Cloudinary
-//   6. Upload each image to awas/images Cloudinary
-//   7. Create writ record in DB
-//
-// No LPR. No FFmpeg. Login + password is the gatekeeper.
-// Writ is issued under the registered plate — not what is in the video.
-// User liability: popup on FE warns them to film their own vehicle only.
-
 exports.verifyAndSeal = async (req, res) => {
     console.log('AWAS verifyAndSeal called');
 
@@ -71,7 +58,6 @@ exports.verifyAndSeal = async (req, res) => {
 
         const normalizedPlate = claimedPlate.toUpperCase().replace(/\s+/g, '');
 
-        // Verify driver is registered, paid and active
         const driver = await prisma.driver.findUnique({
             where: { vehiclePlate: normalizedPlate }
         });
@@ -97,18 +83,15 @@ exports.verifyAndSeal = async (req, res) => {
         const logHashShort = logHash.substring(0, 16);
         const videoBuffer = req.files.video[0].buffer;
 
-        // STEP 1: SHA-256 video
         const videoHash = crypto.createHash('sha256').update(videoBuffer).digest('hex');
         console.log(`AWAS Video Hash: ${videoHash}`);
 
-        // STEP 2: SHA-256 each image (up to 4)
         const imageFiles = (req.files.images || []).slice(0, 4);
         const imageHashes = imageFiles.map(f =>
             crypto.createHash('sha256').update(f.buffer).digest('hex')
         );
         console.log(`AWAS Images: ${imageFiles.length} received`);
 
-        // STEP 3: Upload video to Cloudinary awas/raw
         const rawUploadResult = await uploadBufferToCloudinary(videoBuffer, {
             resource_type: 'video',
             folder: 'awas/raw',
@@ -118,7 +101,6 @@ exports.verifyAndSeal = async (req, res) => {
         const rawVideoUrl = rawUploadResult.secure_url;
         console.log(`AWAS Raw Video URL: ${rawVideoUrl}`);
 
-        // STEP 4: Upload each image to Cloudinary awas/images
         const imageUrls = [];
         for (let i = 0; i < imageFiles.length; i++) {
             const imgResult = await uploadBufferToCloudinary(imageFiles[i].buffer, {
@@ -131,7 +113,6 @@ exports.verifyAndSeal = async (req, res) => {
             console.log(`AWAS Image ${i + 1} URL: ${imgResult.secure_url}`);
         }
 
-        // STEP 5: Create writ record
         const accidentRecord = await prisma.accidentLog.create({
             data: {
                 logHash,
@@ -197,13 +178,11 @@ exports.verifyAndSeal = async (req, res) => {
     }
 };
 
-// ─── GET WRIT BY NUMBER (RM8 PAYWALL RESUME) ─────────────────────────────────
-// Used by FE after returning from ToyyibPay for the RM8 writ-PDF purchase.
-// - If not found: 404.
-// - If isReportPaid is false: return ONLY { isReportPaid: false } so FE can
-//   keep polling without leaking full hashes (paywall integrity).
-// - If isReportPaid is true: return full data needed to rebuild the report
-//   screen and regenerate the PDF with unmasked hashes.
+// ─── GET WRIT BY NUMBER ───────────────────────────────────────────────────────
+// Called by writ.html after ToyyibPay returns user to /writ/AWAS-MY-2026-000048.
+// URL path uses dashes because ToyyibPay cannot handle slashes in billReturnUrl
+// path segments. DB stores slashes — convert before querying.
+// Security: full hashes only returned when isReportPaid === true.
 exports.getWritByNumber = async (req, res) => {
     try {
         const { writNumber } = req.params;
@@ -212,8 +191,12 @@ exports.getWritByNumber = async (req, res) => {
             return res.status(400).json({ error: "Writ number diperlukan." });
         }
 
+        // Convert dash-based URL param back to slash-based DB format
+        // AWAS-MY-2026-000048 → AWAS/MY/2026/000048
+        const normalizedWritNumber = writNumber.replace(/-/g, '/');
+
         const log = await prisma.accidentLog.findFirst({
-            where: { writNumber }
+            where: { writNumber: normalizedWritNumber }
         });
 
         if (!log) {
