@@ -3,7 +3,6 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const multer = require('multer');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -33,16 +32,11 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
 }));
 
-// ─── TOYYIBPAY WEBHOOK — MULTER MULTIPART PARSER ─────────────────────────────
-// ToyyibPay sends callback as multipart/form-data (confirmed from live logs).
-// express.urlencoded() cannot parse multipart — body arrives as {}.
-// multer().none() parses multipart/form-data fields with no file uploads,
-// populating req.body correctly with refno, status, order_id, billcode, etc.
-// Registered BEFORE global body parsers and payment route mount so this
-// route-specific parser fires first.
-const webhookParser = multer().none();
+// ─── TOYYIBPAY WEBHOOK ────────────────────────────────────────────────────────
+// Registered before global body parsers. formidable parses the raw multipart
+// stream INSIDE the handler — stream is intact when handler runs.
 const paymentController = require('./controllers/paymentController');
-app.post('/api/payment/webhook', webhookParser, paymentController.handleWebhook);
+app.post('/api/payment/webhook', paymentController.handleWebhook);
 
 // JSON body parser
 app.use(express.json());

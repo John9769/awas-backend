@@ -11,10 +11,10 @@ router.post('/register', paymentController.createRegistrationBill);
 // Create writ bill (ToyyibPay)
 router.post('/writ', paymentController.createWritBill);
 
-// ToyyibPay webhook — called by ToyyibPay after payment
-router.post('/webhook', paymentController.handleWebhook);
-
 // Get payment status
 router.get('/status/:paymentId', paymentController.getPaymentStatus);
+
+// NOTE: /webhook is NOT here — registered directly in server.js before
+// global body parsers so formidable can read the raw stream cleanly.
 
 module.exports = router;

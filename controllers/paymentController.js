@@ -5,6 +5,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const axios = require('axios');
 const bcrypt = require('bcrypt');
+const formidable = require('formidable');
 const { creditAffiliateEarning } = require('./affiliateController');
 
 const REGISTRATION_FEE = 29.99;
@@ -28,14 +29,6 @@ async function generateUniqueReferralCode() {
 }
 
 // ─── HELPER: Create ToyyibPay Bill ───────────────────────────────────────────
-// billEmail is MANDATORY for ToyyibPay when billPayorInfo=1.
-// Empty OR missing billEmail = createBill fails ("billEmail parameter is empty").
-// Always pass a valid email; caller falls back to noreply@awas.asia if none.
-//
-// billReturnUrl is optional. If not provided, defaults to the registration
-// flow's return target (login.html?payment=success). Callers with a
-// different post-payment destination (e.g. the RM8 writ paywall, which must
-// return to app.html so the report screen can resume) pass their own.
 const createToyyibpayBill = async ({ billName, billDescription, billAmount, billExternalReferenceNo, billTo, billEmail, billPhone, billReturnUrl }) => {
     const params = new URLSearchParams();
     params.append('userSecretKey', process.env.TOYYIBPAY_SECRET_KEY);
@@ -74,9 +67,6 @@ const createToyyibpayBill = async ({ billName, billDescription, billAmount, bill
 };
 
 // ─── CREATE REGISTRATION BILL ─────────────────────────────────────────────────
-// This is the SINGLE endpoint for registration.
-// Driver is created here. If ToyyibPay fails, driver + payment are rolled back.
-// No orphaned records possible.
 exports.createRegistrationBill = async (req, res) => {
     const plate = (req.body.vehiclePlate || '').toUpperCase().replace(/\s+/g, '');
     let driverCreated = false;
@@ -94,7 +84,6 @@ exports.createRegistrationBill = async (req, res) => {
             referredByCode
         } = req.body;
 
-        // ── Validate all inputs ───────────────────────────────────────────
         if (!consentGiven) {
             return res.status(400).json({ error: 'PDPA Consent Mandatory.' });
         }
@@ -116,13 +105,11 @@ exports.createRegistrationBill = async (req, res) => {
 
         const cleanEmail = email.trim().toLowerCase();
 
-        // ── Check if plate already registered and active ──────────────────
         const existing = await prisma.driver.findUnique({ where: { vehiclePlate: plate } });
         if (existing && existing.subStatus === 'ACTIVE') {
             return res.status(409).json({ error: 'Plat kenderaan ini sudah berdaftar dan aktif. Sila log masuk.' });
         }
 
-        // ── Validate referral code ────────────────────────────────────────
         let validReferralCode = null;
         if (referredByCode) {
             const referrer = await prisma.driver.findUnique({
@@ -131,14 +118,9 @@ exports.createRegistrationBill = async (req, res) => {
             if (referrer) validReferralCode = referredByCode.toUpperCase();
         }
 
-        // ── Hash password ─────────────────────────────────────────────────
         const passwordHash = await bcrypt.hash(password, 12);
-
-        // ── Generate unique referral code ─────────────────────────────────
         const newReferralCode = await generateUniqueReferralCode();
 
-        // ── STEP 1: Create driver as EXPIRED ──────────────────────────────
-        // If driver already exists (previous failed attempt) — update record
         await prisma.driver.upsert({
             where: { vehiclePlate: plate },
             update: {
@@ -167,7 +149,6 @@ exports.createRegistrationBill = async (req, res) => {
         });
         driverCreated = true;
 
-        // ── STEP 2: Create payment record ─────────────────────────────────
         const payment = await prisma.payment.create({
             data: {
                 vehiclePlate: plate,
@@ -180,8 +161,6 @@ exports.createRegistrationBill = async (req, res) => {
         });
         paymentId = payment.id;
 
-        // ── STEP 3: Create ToyyibPay bill ─────────────────────────────────
-        // If this fails, we roll back driver + payment in the catch block
         const billCode = await createToyyibpayBill({
             billName: `AWAS-REG-${plate}`,
             billDescription: `AWAS Annual Protection - ${plate}`,
@@ -192,7 +171,6 @@ exports.createRegistrationBill = async (req, res) => {
             billPhone: phone || ''
         });
 
-        // ── STEP 4: Update payment with bill code ─────────────────────────
         await prisma.payment.update({
             where: { id: payment.id },
             data: {
@@ -212,70 +190,69 @@ exports.createRegistrationBill = async (req, res) => {
 
     } catch (err) {
         console.error('Create registration bill fault:', err);
-
-        // ── ROLLBACK: If ToyyibPay failed, clean up driver + payment ──────
         try {
-            if (paymentId) {
-                await prisma.payment.delete({ where: { id: paymentId } });
-            }
-            if (driverCreated) {
-                await prisma.driver.delete({ where: { vehiclePlate: plate } });
-            }
+            if (paymentId) await prisma.payment.delete({ where: { id: paymentId } });
+            if (driverCreated) await prisma.driver.delete({ where: { vehiclePlate: plate } });
             console.log(`AWAS: Rolled back driver + payment for ${plate}`);
         } catch (rollbackErr) {
             console.error('AWAS Rollback fault:', rollbackErr);
         }
-
         return res.status(500).json({ error: 'Ralat semasa mencipta bil pembayaran. Sila cuba lagi.' });
     }
 };
 
 // ─── TOYYIBPAY WEBHOOK ───────────────────────────────────────────────────────
-// status_id: 1 = success, 2 = pending, 3 = failed
+// ToyyibPay sends multipart/form-data (confirmed from live logs + official docs).
+// formidable parses the raw stream inside the handler, bypassing all global
+// middleware stream-consumption issues. Per official docs:
+//   order_id = our billExternalReferenceNo = our payment.id
+//   status   = 1 success / 2 pending / 3 fail (FPX)
+//   status_id = same (DuitNow QR)
+//   refno    = ToyyibPay internal ref (not our ID)
 exports.handleWebhook = async (req, res) => {
     try {
-        // ToyyibPay posts form-encoded data. Read defensively so an empty or
-        // unparsed body never crashes the handler.
-        // (Previous bug: destructuring refno from undefined req.body threw a
-        // TypeError, which killed activation for paid drivers.)
-        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+        // Parse multipart/form-data using formidable
+        const form = formidable({});
+        const body = await new Promise((resolve, reject) => {
+            form.parse(req, (err, fields) => {
+                if (err) return reject(err);
+                // formidable v3 returns field values as arrays — flatten to strings
+                const parsed = {};
+                for (const key in fields) {
+                    parsed[key] = Array.isArray(fields[key]) ? fields[key][0] : fields[key];
+                }
+                resolve(parsed);
+            });
+        });
 
-        // Log the raw body so we can see EXACTLY what ToyyibPay sends.
-        console.log('AWAS Webhook RAW body:', JSON.stringify(body));
+        console.log('AWAS Webhook Parsed body:', JSON.stringify(body));
 
-        // Per ToyyibPay official docs:
-        // - order_id = our billExternalReferenceNo = our payment.id
-        // - status   = payment status (1=success, 2=pending, 3=fail) for FPX
-        // - status_id = same as status for DuitNow QR
-        // - refno    = ToyyibPay's own reference number (NOT our ID)
-        // We must use order_id to look up our payment record.
         const order_id = body.order_id;
         const status = body.status || body.status_id;
         const billcode = body.billcode;
         const refno = body.refno;
 
-        console.log(`AWAS ToyyibPay Webhook: order_id=${order_id} status=${status} billcode=${billcode} refno=${refno}`);
+        console.log(`AWAS Webhook: order_id=${order_id} status=${status} billcode=${billcode} refno=${refno}`);
 
-        // Always answer 200 to ToyyibPay so it does not keep retrying.
+        // Always return 200 to ToyyibPay immediately — prevents retries
         if (!order_id || !status) {
-            console.error('AWAS Webhook: missing order_id or status in body.');
-            return res.status(200).json({ message: 'Missing webhook parameters — ignored.' });
+            console.error('AWAS Webhook: missing order_id or status.');
+            return res.status(200).json({ message: 'Missing parameters — ignored.' });
         }
 
         const paymentId = parseInt(order_id);
         if (isNaN(paymentId)) {
             console.error(`AWAS Webhook: invalid order_id=${order_id}`);
-            return res.status(200).json({ message: 'Invalid reference number — ignored.' });
+            return res.status(200).json({ message: 'Invalid order_id — ignored.' });
         }
 
         const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
-
         if (!payment) {
-            console.error(`AWAS Webhook: Payment not found for refno=${refno}`);
+            console.error(`AWAS Webhook: Payment not found for order_id=${order_id}`);
             return res.status(200).json({ message: 'Payment not found — ignored.' });
         }
 
-        // Handle pending
+        // Pending
         if (status === '2' || status === 2) {
             if (!payment.toyyibpayBillCode && billcode) {
                 await prisma.payment.update({
@@ -286,7 +263,7 @@ exports.handleWebhook = async (req, res) => {
             return res.status(200).json({ message: 'Payment pending.' });
         }
 
-        // Handle failed
+        // Failed
         if (status === '3' || status === 3) {
             await prisma.payment.update({
                 where: { id: paymentId },
@@ -295,7 +272,7 @@ exports.handleWebhook = async (req, res) => {
             return res.status(200).json({ message: 'Payment failed recorded.' });
         }
 
-        // Handle success
+        // Success
         if (status === '1' || status === 1) {
 
             // Idempotency
@@ -303,7 +280,6 @@ exports.handleWebhook = async (req, res) => {
                 return res.status(200).json({ message: 'Already processed.' });
             }
 
-            // Mark payment as paid
             await prisma.payment.update({
                 where: { id: paymentId },
                 data: {
@@ -313,7 +289,7 @@ exports.handleWebhook = async (req, res) => {
                 }
             });
 
-            // Handle REGISTRATION / RENEWAL — activate driver
+            // REGISTRATION / RENEWAL — activate driver
             if (payment.type === 'REGISTRATION' || payment.type === 'RENEWAL') {
                 const expiryDate = new Date();
                 expiryDate.setFullYear(expiryDate.getFullYear() + 1);
@@ -337,7 +313,7 @@ exports.handleWebhook = async (req, res) => {
                 }
             }
 
-            // Handle WRIT — unlock PDF paywall
+            // WRIT — unlock paywall, user redirected to /writ/:writNumber page
             if (payment.type === 'WRIT') {
                 const log = await prisma.accidentLog.findFirst({
                     where: {
@@ -352,29 +328,26 @@ exports.handleWebhook = async (req, res) => {
                         where: { id: log.id },
                         data: { isReportPaid: true }
                     });
-                    console.log(`AWAS: Writ paywall cleared for ${payment.vehiclePlate} logId=${log.id}`);
+                    console.log(`AWAS: Writ unlocked for ${payment.vehiclePlate} writNumber=${log.writNumber}`);
                 }
             }
 
             return res.status(200).json({ message: 'Payment processed successfully.' });
         }
 
-        return res.status(200).json({ message: 'Unknown status ignored.' });
+        return res.status(200).json({ message: 'Unknown status — ignored.' });
 
     } catch (err) {
         console.error('AWAS Webhook fault:', err);
-        // Still answer 200 so ToyyibPay does not hammer retries on a server error.
         return res.status(200).json({ message: 'Webhook error logged.' });
     }
 };
 
 // ─── CREATE WRIT BILL (RM8) ──────────────────────────────────────────────────
-// Requires vehiclePlate, logHash, AND writNumber.
-// writNumber is not used by ToyyibPay itself — it is embedded into
-// billReturnUrl so that when ToyyibPay redirects the browser back to
-// app.html, the frontend knows exactly which writ to poll/fetch and resume.
-// Without it the return trip has no way to identify which report to unlock,
-// so it is required and rejected with 400 if missing — same as plate/hash.
+// billReturnUrl uses PATH-based writNumber (not query string).
+// ToyyibPay cannot strip path segments — only query strings get mangled.
+// User lands on awas.asia/writ/AWAS-MY-2026-000048 after payment.
+// That page fetches full writ data from BE if isReportPaid=true.
 exports.createWritBill = async (req, res) => {
     try {
         const { vehiclePlate, logHash, writNumber } = req.body;
@@ -386,7 +359,6 @@ exports.createWritBill = async (req, res) => {
         const plate = vehiclePlate.toUpperCase().replace(/\s+/g, '');
 
         const driver = await prisma.driver.findUnique({ where: { vehiclePlate: plate } });
-
         if (!driver) {
             return res.status(404).json({ error: 'Akaun AWAS tidak dijumpai.' });
         }
@@ -400,7 +372,10 @@ exports.createWritBill = async (req, res) => {
             }
         });
 
-        const writReturnUrl = `${process.env.FE_URL}/app.html`;
+        // Path-based return URL — writNumber in path, not query string
+        // e.g. https://awas.asia/writ/AWAS-MY-2026-000048
+        const writSlug = writNumber.replace(/\//g, '-');
+        const writReturnUrl = `${process.env.FE_URL}/writ/${writSlug}`;
 
         let billCode;
         try {
@@ -415,7 +390,6 @@ exports.createWritBill = async (req, res) => {
                 billReturnUrl: writReturnUrl
             });
         } catch (toyyibErr) {
-            // Rollback payment record if ToyyibPay fails
             await prisma.payment.delete({ where: { id: payment.id } });
             console.error('Create writ bill ToyyibPay fault:', toyyibErr);
             return res.status(500).json({ error: 'Ralat semasa mencipta bil writ. Sila cuba lagi.' });
@@ -428,6 +402,8 @@ exports.createWritBill = async (req, res) => {
                 toyyibpayUrl: `${TOYYIBPAY_BASE_URL}/${billCode}`
             }
         });
+
+        console.log(`AWAS: Writ bill created for ${plate} writNumber=${writNumber} returnUrl=${writReturnUrl}`);
 
         return res.status(201).json({
             paymentId: payment.id,
