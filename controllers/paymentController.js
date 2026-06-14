@@ -243,22 +243,28 @@ exports.handleWebhook = async (req, res) => {
         // Log the raw body so we can see EXACTLY what ToyyibPay sends.
         console.log('AWAS Webhook RAW body:', JSON.stringify(body));
 
-        const refno = body.refno;
-        const status_id = body.status_id;
+        // Per ToyyibPay official docs:
+        // - order_id = our billExternalReferenceNo = our payment.id
+        // - status   = payment status (1=success, 2=pending, 3=fail) for FPX
+        // - status_id = same as status for DuitNow QR
+        // - refno    = ToyyibPay's own reference number (NOT our ID)
+        // We must use order_id to look up our payment record.
+        const order_id = body.order_id;
+        const status = body.status || body.status_id;
         const billcode = body.billcode;
+        const refno = body.refno;
 
-        console.log(`AWAS ToyyibPay Webhook: refno=${refno} status_id=${status_id} billcode=${billcode}`);
+        console.log(`AWAS ToyyibPay Webhook: order_id=${order_id} status=${status} billcode=${billcode} refno=${refno}`);
 
-        // Always answer 200 to ToyyibPay so it does not keep retrying,
-        // even when we can't act on the payload.
-        if (!refno || !status_id) {
-            console.error('AWAS Webhook: missing refno or status_id in body.');
+        // Always answer 200 to ToyyibPay so it does not keep retrying.
+        if (!order_id || !status) {
+            console.error('AWAS Webhook: missing order_id or status in body.');
             return res.status(200).json({ message: 'Missing webhook parameters — ignored.' });
         }
 
-        const paymentId = parseInt(refno);
+        const paymentId = parseInt(order_id);
         if (isNaN(paymentId)) {
-            console.error(`AWAS Webhook: invalid refno=${refno}`);
+            console.error(`AWAS Webhook: invalid order_id=${order_id}`);
             return res.status(200).json({ message: 'Invalid reference number — ignored.' });
         }
 
@@ -270,7 +276,7 @@ exports.handleWebhook = async (req, res) => {
         }
 
         // Handle pending
-        if (status_id === '2' || status_id === 2) {
+        if (status === '2' || status === 2) {
             if (!payment.toyyibpayBillCode && billcode) {
                 await prisma.payment.update({
                     where: { id: paymentId },
@@ -281,7 +287,7 @@ exports.handleWebhook = async (req, res) => {
         }
 
         // Handle failed
-        if (status_id === '3' || status_id === 3) {
+        if (status === '3' || status === 3) {
             await prisma.payment.update({
                 where: { id: paymentId },
                 data: { status: 'FAILED' }
@@ -290,7 +296,7 @@ exports.handleWebhook = async (req, res) => {
         }
 
         // Handle success
-        if (status_id === '1' || status_id === 1) {
+        if (status === '1' || status === 1) {
 
             // Idempotency
             if (payment.status === 'PAID') {
