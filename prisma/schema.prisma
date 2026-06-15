@@ -64,6 +64,7 @@ enum PaymentType {
   REGISTRATION
   RENEWAL
   WRIT
+  INSTITUTION
 }
 
 enum AffiliatePayoutStatus {
@@ -133,19 +134,21 @@ model AccidentLog {
 }
 
 model VerificationRequest {
-  id                  Int                @id @default(autoincrement())
-  logHash             String             @map("log_hash")
-  accidentLog         AccidentLog        @relation(fields: [logHash], references: [logHash])
-  institutionalUserId Int?               @map("institutional_user_id")
-  institutionalUser   InstitutionalUser? @relation(fields: [institutionalUserId], references: [id])
-  requesterType       InstitutionType    @map("requester_type")
-  companyName         String             @map("company_name")
-  caseReferenceNo     String             @map("case_reference_no")
-  approvalStatus      RequestStatus      @default(PENDING) @map("approval_status")
-  driverApprovedAt    DateTime?          @map("driver_approved_at")
-  consentToken        String?            @unique @map("consent_token")
-  isPaymentSettled    Boolean            @default(false) @map("is_payment_settled")
-  createdAt           DateTime           @default(now()) @map("created_at")
+  id                      Int                      @id @default(autoincrement())
+  logHash                 String                   @map("log_hash")
+  accidentLog             AccidentLog              @relation(fields: [logHash], references: [logHash])
+  institutionalUserId     Int?                     @map("institutional_user_id")
+  institutionalUser       InstitutionalUser?       @relation(fields: [institutionalUserId], references: [id])
+  requesterType           InstitutionType          @map("requester_type")
+  companyName             String                   @map("company_name")
+  caseReferenceNo         String                   @map("case_reference_no")
+  approvalStatus          RequestStatus            @default(PENDING) @map("approval_status")
+  driverApprovedAt        DateTime?                @map("driver_approved_at")
+  consentToken            String?                  @unique @map("consent_token")
+  isPaymentSettled        Boolean                  @default(false) @map("is_payment_settled")
+  createdAt               DateTime                 @default(now()) @map("created_at")
+  payment                 Payment?
+  certificate             VerificationCertificate?
 
   @@index([logHash])
   @@map("verification_requests")
@@ -161,26 +164,43 @@ model InstitutionalUser {
   isApproved           Boolean               @default(false) @map("is_approved")
   createdAt            DateTime              @default(now()) @map("created_at")
   verificationRequests VerificationRequest[]
+  payments             Payment[]
 
   @@map("institutional_users")
 }
 
 model Payment {
-  id                Int               @id @default(autoincrement())
-  vehiclePlate      String            @map("vehicle_plate")
-  driver            Driver            @relation(fields: [vehiclePlate], references: [vehiclePlate])
-  amount            Decimal           @db.Decimal(10, 2)
-  type              PaymentType
-  status            PaymentStatus     @default(PENDING)
-  toyyibpayBillCode String?           @unique @map("toyyibpay_bill_code")
-  toyyibpayUrl      String?           @map("toyyibpay_url")
-  paidAt            DateTime?         @map("paid_at")
-  referralCode      String?           @map("referral_code")
-  affiliateCut      Decimal?          @db.Decimal(10, 2) @map("affiliate_cut")
-  createdAt         DateTime          @default(now()) @map("created_at")
-  affiliateEarning  AffiliateEarning?
+  id                    Int                  @id @default(autoincrement())
+  vehiclePlate          String?              @map("vehicle_plate")
+  driver                Driver?              @relation(fields: [vehiclePlate], references: [vehiclePlate])
+  institutionalUserId   Int?                 @map("institutional_user_id")
+  institutionalUser     InstitutionalUser?   @relation(fields: [institutionalUserId], references: [id])
+  amount                Decimal              @db.Decimal(10, 2)
+  type                  PaymentType
+  status                PaymentStatus        @default(PENDING)
+  toyyibpayBillCode     String?              @unique @map("toyyibpay_bill_code")
+  toyyibpayUrl          String?              @map("toyyibpay_url")
+  paidAt                DateTime?            @map("paid_at")
+  referralCode          String?              @map("referral_code")
+  affiliateCut          Decimal?             @db.Decimal(10, 2) @map("affiliate_cut")
+  verificationRequestId Int?                 @unique @map("verification_request_id")
+  verificationRequest   VerificationRequest? @relation(fields: [verificationRequestId], references: [id])
+  createdAt             DateTime             @default(now()) @map("created_at")
+  affiliateEarning      AffiliateEarning?
 
   @@map("payments")
+}
+
+model VerificationCertificate {
+  id                    Int                 @id @default(autoincrement())
+  certNumber            String              @unique @map("cert_number")
+  certHash              String              @map("cert_hash")
+  verificationRequestId Int                 @unique @map("verification_request_id")
+  verificationRequest   VerificationRequest @relation(fields: [verificationRequestId], references: [id])
+  issuedAt              DateTime            @default(now()) @map("issued_at")
+  createdAt             DateTime            @default(now()) @map("created_at")
+
+  @@map("verification_certificates")
 }
 
 model Affiliate {

@@ -21,5 +21,6 @@ router.get('/institutions/pending', adminController.getPendingInstitutions);
 router.patch('/institutions/:id/approve', adminController.approveInstitution);
 router.patch('/institutions/:id/revoke', adminController.revokeInstitution);
 router.get('/verification-requests', adminController.getVerificationRequests);
+router.post('/trigger-consent', adminController.triggerConsent);
 
 module.exports = router;

@@ -332,6 +332,74 @@ exports.handleWebhook = async (req, res) => {
                 }
             }
 
+            // INSTITUTION — generate certificate + notify institution
+            if (payment.type === 'INSTITUTION') {
+                const verReq = await prisma.verificationRequest.findUnique({
+                    where: { id: payment.verificationRequestId },
+                    include: {
+                        accidentLog: true,
+                        institutionalUser: true
+                    }
+                });
+
+                if (verReq) {
+                    await prisma.verificationRequest.update({
+                        where: { id: verReq.id },
+                        data: { isPaymentSettled: true }
+                    });
+
+                    const year = new Date().getFullYear();
+                    const certCount = await prisma.verificationCertificate.count();
+                    const certNumber = `AWAS-CERT-${year}-${String(certCount + 1).padStart(6, '0')}`;
+
+                    const crypto = require('crypto');
+                    const certContent = [
+                        certNumber,
+                        verReq.accidentLog.writNumber,
+                        verReq.accidentLog.logHash,
+                        verReq.accidentLog.videoHash,
+                        verReq.companyName,
+                        verReq.caseReferenceNo,
+                        new Date().toISOString()
+                    ].join('|');
+                    const certHash = crypto.createHash('sha256').update(certContent).digest('hex');
+
+                    await prisma.verificationCertificate.create({
+                        data: {
+                            certNumber,
+                            certHash,
+                            verificationRequestId: verReq.id
+                        }
+                    });
+
+                    try {
+                        const { Resend } = require('resend');
+                        const resend = new Resend(process.env.RESEND_API_KEY);
+                        const certSlug = certNumber.replace(/\//g, '-');
+                        const certUrl = `${process.env.FE_URL}/cert/${certSlug}`;
+
+                        await resend.emails.send({
+                            from: 'AWAS <hello@awas.asia>',
+                            to: verReq.institutionalUser.email,
+                            subject: `[AWAS] Sijil Pengesahan Rasmi — ${certNumber}`,
+                            html: `
+                                <h2>✅ Sijil Pengesahan AWAS Telah Dikeluarkan</h2>
+                                <p>Pembayaran anda telah diterima. Sijil Pengesahan Rasmi AWAS kini tersedia.</p>
+                                <p><strong>Nombor Sijil:</strong> ${certNumber}</p>
+                                <p><strong>Writ:</strong> ${verReq.accidentLog.writNumber}</p>
+                                <p><strong>Nombor Kes:</strong> ${verReq.caseReferenceNo}</p>
+                                <p><a href="${certUrl}" style="background:#16a34a;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:700;">Buka Sijil Pengesahan</a></p>
+                                <p style="font-size:0.8rem;color:#64748b;margin-top:20px;">Pautan sijil ini kekal selamanya.</p>
+                            `
+                        });
+                    } catch (emailErr) {
+                        console.error('AWAS: Certificate email fault:', emailErr);
+                    }
+
+                    console.log(`AWAS: Certificate ${certNumber} issued for ticket ${verReq.id}`);
+                }
+            }
+
             return res.status(200).json({ message: 'Payment processed successfully.' });
         }
 

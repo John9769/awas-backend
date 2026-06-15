@@ -420,3 +420,83 @@ exports.getVerificationRequests = async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch verification requests.' });
     }
 };
+
+// TRIGGER CONSENT — admin sends consent email to driver
+exports.triggerConsent = async (req, res) => {
+    try {
+        const { ticketId } = req.body;
+
+        if (!ticketId) {
+            return res.status(400).json({ error: 'ticketId required.' });
+        }
+
+        const ticket = await prisma.verificationRequest.findUnique({
+            where: { id: parseInt(ticketId) },
+            include: {
+                accidentLog: {
+                    include: { driver: true }
+                },
+                institutionalUser: true
+            }
+        });
+
+        if (!ticket) {
+            return res.status(404).json({ error: 'Ticket not found.' });
+        }
+
+        if (ticket.approvalStatus !== 'PENDING') {
+            return res.status(409).json({ error: `Ticket already ${ticket.approvalStatus}.` });
+        }
+
+        if (!ticket.consentToken) {
+            return res.status(400).json({ error: 'No consent token on this ticket.' });
+        }
+
+        const driver = ticket.accidentLog.driver;
+
+        if (!driver.email) {
+            return res.status(400).json({ error: 'Driver has no email address on record.' });
+        }
+
+        const approveUrl = `${process.env.BE_URL}/api/institutions/consent/${ticket.consentToken}/approve`;
+        const rejectUrl = `${process.env.BE_URL}/api/institutions/consent/${ticket.consentToken}/reject`;
+
+        const { Resend } = require('resend');
+        const resend = new Resend(process.env.RESEND_API_KEY);
+
+        await resend.emails.send({
+            from: 'AWAS <hello@awas.asia>',
+            to: driver.email,
+            subject: `[AWAS] Permintaan Akses Bukti Kemalangan Anda`,
+            html: `
+                <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+                <h2 style="color:#0f172a;">Permintaan Akses Bukti Kemalangan</h2>
+                <p>Syarikat berikut meminta akses kepada bukti kemalangan anda dalam sistem AWAS:</p>
+                <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                    <tr><td style="padding:8px;color:#64748b;font-weight:600;">Syarikat</td><td style="padding:8px;">${ticket.companyName}</td></tr>
+                    <tr><td style="padding:8px;color:#64748b;font-weight:600;">Jenis</td><td style="padding:8px;">${ticket.requesterType === 'INSURANCE' ? 'Syarikat Insurans' : 'Peguam'}</td></tr>
+                    <tr><td style="padding:8px;color:#64748b;font-weight:600;">Nombor Kes</td><td style="padding:8px;">${ticket.caseReferenceNo}</td></tr>
+                    <tr><td style="padding:8px;color:#64748b;font-weight:600;">Writ</td><td style="padding:8px;">${ticket.accidentLog.writNumber}</td></tr>
+                </table>
+                <p>Mereka ingin mengesahkan keaslian video dan gambar bukti anda. Sila pilih:</p>
+                <div style="margin:24px 0;">
+                    <a href="${approveUrl}" style="background:#16a34a;color:white;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block;margin-right:12px;">✅ SAYA BERSETUJU</a>
+                    <a href="${rejectUrl}" style="background:#dc2626;color:white;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block;">❌ SAYA TIDAK BERSETUJU</a>
+                </div>
+                <p style="font-size:0.8rem;color:#64748b;">Keputusan anda akan direkodkan dalam pelayan AWAS dan dilindungi oleh Akta Perlindungan Data Peribadi (PDPA). Jika anda tidak membuat sebarang pilihan, permintaan ini akan tamat tempoh dalam 7 hari.</p>
+                </div>
+            `
+        });
+
+        console.log(`AWAS Admin: Consent email sent to ${driver.email} for ticket ${ticketId}`);
+
+        return res.status(200).json({
+            message: `Consent email dihantar kepada ${driver.email}.`,
+            ticketId: ticket.id
+        });
+
+    } catch (error) {
+        console.error('AWAS triggerConsent Fault:', error);
+        return res.status(500).json({ error: 'Failed to send consent email.' });
+    }
+};
